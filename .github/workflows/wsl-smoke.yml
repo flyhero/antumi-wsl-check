@@ -1,7 +1,7 @@
 name: wsl-smoke
 on:
   push:
-    paths: ['wsl-smoke.mjs', 'wsl-tunnel.mjs', '.github/workflows/wsl-smoke.yml']
+    paths: ['wsl-tunnel.mjs', '.github/workflows/wsl-smoke.yml']
   workflow_dispatch:
 permissions:
   contents: read

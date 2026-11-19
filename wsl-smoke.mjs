@@ -7,8 +7,10 @@ var __export = (target, all) => {
 // packages/desktop/src/main/wsl/wsl-smoke.ts
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync } from "node:fs";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -19682,120 +19684,6 @@ function date4(params) {
 var AGENT_KINDS = ["claude", "codex", "cursor", "opencode", "pi", "dsh", "antigravity", "zcode", "kimi", "gemini"];
 var AgentKind = external_exports.enum(AGENT_KINDS);
 
-// packages/protocol/src/ports.ts
-var PortRef = external_exports.object({
-  sessionId: external_exports.string(),
-  pid: external_exports.number().int().positive(),
-  startedAt: external_exports.string().min(1),
-  port: external_exports.number().int().min(1).max(65535),
-  address: external_exports.string().min(1)
-});
-var HostedPort = PortRef.extend({ command: external_exports.string(), canStop: external_exports.boolean(), cwd: external_exports.string().optional(), owner: external_exports.string().optional() });
-var ListeningPort = HostedPort.extend({
-  terminalId: external_exports.string().uuid().nullable(),
-  conversationId: external_exports.string().uuid().nullable(),
-  taskId: external_exports.string().nullable(),
-  cwd: external_exports.string(),
-  label: external_exports.string().nullable()
-});
-var PortList = external_exports.object({ ports: external_exports.array(ListeningPort), problem: external_exports.string().nullable() });
-var PortLabels = external_exports.object({ ports: external_exports.array(external_exports.object({ port: external_exports.number().int().min(1).max(65535), label: external_exports.string().trim().min(1).max(80) })).max(200) });
-
-// packages/protocol/src/node/daemon-protocol.ts
-var SessionRef = external_exports.object({ sessionId: external_exports.string() });
-var Ok = external_exports.object({ ok: external_exports.literal(true) });
-var ProcessSnapshotData = external_exports.object({
-  processes: external_exports.array(external_exports.object({ pid: external_exports.number().int(), parentPid: external_exports.number().int(), startedAt: external_exports.string(), command: external_exports.string() })),
-  listeners: external_exports.array(external_exports.object({ pid: external_exports.number().int(), address: external_exports.string(), port: external_exports.number().int() }))
-});
-var AwakeBackendStatus = external_exports.object({
-  active: external_exports.boolean(),
-  supported: external_exports.boolean(),
-  problem: external_exports.string().nullable()
-});
-var SessionIo = external_exports.enum(["pty", "pipe"]);
-var SessionInfo = external_exports.object({
-  sessionId: external_exports.string(),
-  exited: external_exports.boolean(),
-  exitCode: external_exports.number().nullable(),
-  // Older daemons host PTYs only and leave it out.
-  io: SessionIo.optional(),
-  agent: AgentKind.optional(),
-  upgradeId: external_exports.string().uuid().optional(),
-  stopReason: external_exports.enum(["cancelled", "timed-out"]).optional(),
-  // A pipe's PROCESS_OWNER_ENV as it was started; older daemons leave it out.
-  owner: external_exports.string().optional()
-});
-var Launch = external_exports.object({
-  agent: AgentKind.optional(),
-  command: external_exports.string(),
-  args: external_exports.array(external_exports.string()),
-  cwd: external_exports.string(),
-  env: external_exports.record(external_exports.string(), external_exports.string())
-});
-var daemonMethods = {
-  portsList: { params: external_exports.object({}), result: external_exports.array(HostedPort) },
-  portsStop: { params: PortRef, result: Ok },
-  spawnCliUpgrade: {
-    params: Launch.extend({ agent: AgentKind, upgradeId: external_exports.string().uuid(), cols: external_exports.number().int().min(1), rows: external_exports.number().int().min(1) }),
-    result: SessionRef
-  },
-  spawn: {
-    params: Launch.extend({ cols: external_exports.number().int().min(1), rows: external_exports.number().int().min(1) }),
-    result: SessionRef
-  },
-  // A method of its own rather than a flag on spawn: an older daemon would drop the flag and
-  // start a PTY, where this one fails with unknown-method.
-  spawnPipe: { params: Launch, result: SessionRef },
-  // As spawnPipe, but with none of the daemon's own environment beyond what a process needs to run
-  // at all (CLEAN_ENV_KEYS): for an agent answering someone who is not the user. A method of its
-  // own for the same reason: an older daemon must fail rather than pass everything on.
-  spawnPipeClean: { params: Launch, result: SessionRef },
-  write: { params: SessionRef.extend({ data: external_exports.string() }), result: Ok },
-  resize: {
-    params: SessionRef.extend({ cols: external_exports.number().int().min(1), rows: external_exports.number().int().min(1) }),
-    result: Ok
-  },
-  // force skips the polite signal, for a process that ignored it.
-  kill: { params: SessionRef.extend({ force: external_exports.boolean().optional() }), result: Ok },
-  attach: {
-    params: SessionRef,
-    result: SessionInfo.extend({
-      buffer: external_exports.string(),
-      bufferStart: external_exports.number().int(),
-      endOffset: external_exports.number().int(),
-      // A pipe session's recent stderr: what a CLI says when it fails before its first JSON line.
-      stderr: external_exports.string().optional()
-    })
-  },
-  list: { params: external_exports.object({}), result: external_exports.object({ sessions: external_exports.array(SessionInfo) }) },
-  // Forgets an exited session and its buffered output, once core has kept what it needs.
-  release: { params: SessionRef, result: Ok },
-  // A lease makes a lost core release the assertion without relying on cleanup running.
-  awakeSet: {
-    params: external_exports.object({ active: external_exports.boolean(), leaseMs: external_exports.number().int().min(1e4).max(3e5) }),
-    result: AwakeBackendStatus
-  },
-  awakeStatus: { params: external_exports.object({}), result: AwakeBackendStatus },
-  // The daemon's own build, for an app updated in place to tell an old one from its own.
-  info: { params: external_exports.object({}), result: external_exports.object({ version: external_exports.string(), pid: external_exports.number().int(), features: external_exports.array(external_exports.string()).optional() }) },
-  // Leaves, but only when nothing it hosts still runs (a browser host aside, which core starts
-  // again when it needs one): an app updated in place replaces it then. live: what kept it.
-  // blockers: the sessions still alive when it refuses; older daemons give only the count.
-  retire: { params: external_exports.object({}), result: external_exports.object({ retired: external_exports.boolean(), live: external_exports.number().int(), blockers: external_exports.array(external_exports.object({ sessionId: external_exports.string(), agent: AgentKind.optional() })).optional() }) }
-};
-var DaemonRequest = external_exports.object({ id: external_exports.number(), method: external_exports.string(), params: external_exports.unknown() });
-var DaemonEvent = external_exports.discriminatedUnion("event", [
-  external_exports.object({ event: external_exports.literal("data"), sessionId: external_exports.string(), data: external_exports.string(), offset: external_exports.number().int() }),
-  external_exports.object({ event: external_exports.literal("stderr"), sessionId: external_exports.string(), data: external_exports.string() }),
-  external_exports.object({ event: external_exports.literal("exit"), sessionId: external_exports.string(), exitCode: external_exports.number() })
-]);
-var DaemonInbound = external_exports.union([
-  DaemonEvent,
-  external_exports.object({ id: external_exports.number(), error: external_exports.string() }),
-  external_exports.object({ id: external_exports.number(), result: external_exports.unknown() })
-]);
-
 // packages/protocol/src/attachments.ts
 var ATTACHMENT_ID_PATTERN = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/;
 var AttachmentId = external_exports.string().regex(ATTACHMENT_ID_PATTERN);
@@ -19821,81 +19709,6 @@ var TaskImage = external_exports.object({
   height: external_exports.number().int().positive()
 });
 var ImageRef = external_exports.object({ id: AttachmentId, name: external_exports.string().trim().max(MAX_IMAGE_NAME_LENGTH) });
-
-// packages/protocol/src/source-comments.ts
-var WebUrl = external_exports.string().max(4e3).refine((value) => {
-  try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
-  } catch {
-    return false;
-  }
-});
-var SourceCommentImage = external_exports.object({ id: external_exports.string().min(1).max(500), name: external_exports.string().max(4096) });
-var SourceComment = external_exports.object({
-  id: external_exports.string().min(1).max(500),
-  author: external_exports.string().max(500),
-  createdAt: external_exports.number().int().nonnegative(),
-  updatedAt: external_exports.number().int().nonnegative().nullable(),
-  url: WebUrl,
-  markdown: external_exports.string().max(5e4),
-  truncated: external_exports.boolean().default(false),
-  images: external_exports.array(SourceCommentImage).max(MAX_TASK_IMAGES).optional()
-});
-var CommentCheckpoint = external_exports.object({ createdAt: external_exports.number().int().nonnegative(), ids: external_exports.array(external_exports.string().min(1).max(500)).max(1e4) });
-var SourceCommentState = external_exports.object({ comments: external_exports.array(SourceComment).max(1e4), checkpoint: CommentCheckpoint });
-var SourceCommentPage = external_exports.object({ comments: external_exports.array(SourceComment).max(100), continuation: external_exports.string().max(2e5).nullable(), checkpoint: CommentCheckpoint });
-var SourceCommentOptions = external_exports.object({ checkpoint: CommentCheckpoint, continuation: external_exports.string().max(2e5).nullable() });
-var SourceUpdateTarget = external_exports.object({ kind: external_exports.enum(["conversation", "task"]), id: external_exports.string().min(1).max(200) });
-var SourceDeliveryState = external_exports.enum(["prepared", "queued", "held", "submitted", "cancelled", "failed", "uncertain"]);
-var SourceDelivery = external_exports.object({
-  id: external_exports.string().uuid(),
-  requestId: external_exports.string().uuid(),
-  target: SourceUpdateTarget,
-  generation: external_exports.string().optional(),
-  conversationId: external_exports.string(),
-  ref: external_exports.string(),
-  commentIds: external_exports.array(external_exports.string()),
-  // The comments' images as stored attachments, sent with the text; kept so a retry sends the same.
-  imageIds: external_exports.array(external_exports.string()).max(MAX_TASK_IMAGES).optional(),
-  text: external_exports.string(),
-  state: SourceDeliveryState,
-  error: external_exports.string().nullable(),
-  createdAt: external_exports.number()
-});
-var SourceDeliveryInfo = SourceDelivery.omit({ text: true });
-var SourceUpdateSummary = external_exports.object({
-  revision: external_exports.string(),
-  target: SourceUpdateTarget,
-  watching: external_exports.boolean(),
-  active: external_exports.boolean(),
-  supported: external_exports.boolean(),
-  unread: external_exports.number().int().nonnegative(),
-  pending: external_exports.number().int().nonnegative(),
-  through: external_exports.number().int().nonnegative(),
-  refreshedAt: external_exports.number().nullable(),
-  refreshing: external_exports.boolean(),
-  problem: external_exports.string().nullable(),
-  sendBlocker: external_exports.string().nullable()
-});
-var SourceUpdates = external_exports.object({
-  summary: SourceUpdateSummary,
-  comments: external_exports.array(SourceComment.extend({ sequence: external_exports.number(), pending: external_exports.boolean() })),
-  next: external_exports.number().nullable(),
-  deliveries: external_exports.array(SourceDeliveryInfo)
-});
-
-// packages/protocol/src/localization.ts
-var UiLocale = external_exports.enum(["zh-CN", "en"]);
-var LanguagePreference = external_exports.enum(["system", "zh-CN", "en"]);
-var TextTranslations = external_exports.object({
-  en: external_exports.object({
-    label: external_exports.string().optional(),
-    hint: external_exports.string().optional(),
-    placeholder: external_exports.string().optional(),
-    error: external_exports.string().optional(),
-    message: external_exports.string().optional()
-  }).optional()
-});
 
 // packages/protocol/src/chat-reference.ts
 var ChatReferenceTarget = external_exports.discriminatedUnion("kind", [
@@ -20329,6 +20142,81 @@ var ChatItemList = external_exports.array(external_exports.unknown()).transform(
   })
 );
 
+// packages/protocol/src/source-comments.ts
+var WebUrl = external_exports.string().max(4e3).refine((value) => {
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+});
+var SourceCommentImage = external_exports.object({ id: external_exports.string().min(1).max(500), name: external_exports.string().max(4096) });
+var SourceComment = external_exports.object({
+  id: external_exports.string().min(1).max(500),
+  author: external_exports.string().max(500),
+  createdAt: external_exports.number().int().nonnegative(),
+  updatedAt: external_exports.number().int().nonnegative().nullable(),
+  url: WebUrl,
+  markdown: external_exports.string().max(5e4),
+  truncated: external_exports.boolean().default(false),
+  images: external_exports.array(SourceCommentImage).max(MAX_TASK_IMAGES).optional()
+});
+var CommentCheckpoint = external_exports.object({ createdAt: external_exports.number().int().nonnegative(), ids: external_exports.array(external_exports.string().min(1).max(500)).max(1e4) });
+var SourceCommentState = external_exports.object({ comments: external_exports.array(SourceComment).max(1e4), checkpoint: CommentCheckpoint });
+var SourceCommentPage = external_exports.object({ comments: external_exports.array(SourceComment).max(100), continuation: external_exports.string().max(2e5).nullable(), checkpoint: CommentCheckpoint });
+var SourceCommentOptions = external_exports.object({ checkpoint: CommentCheckpoint, continuation: external_exports.string().max(2e5).nullable() });
+var SourceUpdateTarget = external_exports.object({ kind: external_exports.enum(["conversation", "task"]), id: external_exports.string().min(1).max(200) });
+var SourceDeliveryState = external_exports.enum(["prepared", "queued", "held", "submitted", "cancelled", "failed", "uncertain"]);
+var SourceDelivery = external_exports.object({
+  id: external_exports.string().uuid(),
+  requestId: external_exports.string().uuid(),
+  target: SourceUpdateTarget,
+  generation: external_exports.string().optional(),
+  conversationId: external_exports.string(),
+  ref: external_exports.string(),
+  commentIds: external_exports.array(external_exports.string()),
+  // The comments' images as stored attachments, sent with the text; kept so a retry sends the same.
+  imageIds: external_exports.array(external_exports.string()).max(MAX_TASK_IMAGES).optional(),
+  text: external_exports.string(),
+  state: SourceDeliveryState,
+  error: external_exports.string().nullable(),
+  createdAt: external_exports.number()
+});
+var SourceDeliveryInfo = SourceDelivery.omit({ text: true });
+var SourceUpdateSummary = external_exports.object({
+  revision: external_exports.string(),
+  target: SourceUpdateTarget,
+  watching: external_exports.boolean(),
+  active: external_exports.boolean(),
+  supported: external_exports.boolean(),
+  unread: external_exports.number().int().nonnegative(),
+  pending: external_exports.number().int().nonnegative(),
+  through: external_exports.number().int().nonnegative(),
+  refreshedAt: external_exports.number().nullable(),
+  refreshing: external_exports.boolean(),
+  problem: external_exports.string().nullable(),
+  sendBlocker: external_exports.string().nullable()
+});
+var SourceUpdates = external_exports.object({
+  summary: SourceUpdateSummary,
+  comments: external_exports.array(SourceComment.extend({ sequence: external_exports.number(), pending: external_exports.boolean() })),
+  next: external_exports.number().nullable(),
+  deliveries: external_exports.array(SourceDeliveryInfo)
+});
+
+// packages/protocol/src/localization.ts
+var UiLocale = external_exports.enum(["zh-CN", "en"]);
+var LanguagePreference = external_exports.enum(["system", "zh-CN", "en"]);
+var TextTranslations = external_exports.object({
+  en: external_exports.object({
+    label: external_exports.string().optional(),
+    hint: external_exports.string().optional(),
+    placeholder: external_exports.string().optional(),
+    error: external_exports.string().optional(),
+    message: external_exports.string().optional()
+  }).optional()
+});
+
 // packages/protocol/src/source.ts
 var SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 var SourceId = external_exports.string().regex(SOURCE_ID_PATTERN);
@@ -20495,331 +20383,6 @@ var SourceInbox = external_exports.object({
   // The last refresh failed; `items` keeps what the one before it found.
   problem: SourceProblem.nullable(),
   autoInvestigation: AutoInvestigationInfo.optional()
-});
-
-// packages/protocol/src/browser.ts
-var BrowserViewport = external_exports.object({ width: external_exports.number().int().min(320).max(3840), height: external_exports.number().int().min(240).max(2160) });
-var BrowserTabId = external_exports.string().uuid();
-var BrowserTab = external_exports.object({
-  id: BrowserTabId,
-  // Whose tab it is: a conversation's, for its agent to drive, or null for one the user opened
-  // themselves in the browser panel, which no agent sees.
-  conversationId: external_exports.string().uuid().nullable(),
-  // A user's tab can be lent to one conversation, and returned without closing its page.
-  userOwned: external_exports.boolean().optional(),
-  debugging: external_exports.boolean().optional(),
-  url: external_exports.string().max(4096),
-  title: external_exports.string().max(500),
-  loading: external_exports.boolean(),
-  // The conversation's tab its tools act on when they name none: the one last used.
-  active: external_exports.boolean(),
-  // The user is acting in the live view; the agent's calls on the tab are refused meanwhile.
-  userDriving: external_exports.boolean().default(false),
-  // One of the agent's calls is under way on the tab.
-  agentActing: external_exports.boolean().default(false),
-  // The size the tab is held at, or null while it follows the panel.
-  viewport: BrowserViewport.nullable().default(null),
-  createdAt: external_exports.number()
-});
-var BrowserDownload = external_exports.object({
-  id: external_exports.string().uuid(),
-  tabId: BrowserTabId,
-  conversationId: external_exports.string().uuid().nullable(),
-  url: external_exports.string(),
-  filename: external_exports.string(),
-  path: external_exports.string(),
-  receivedBytes: external_exports.number().nonnegative(),
-  totalBytes: external_exports.number().nonnegative(),
-  state: external_exports.enum(["progressing", "completed", "cancelled", "interrupted"]),
-  paused: external_exports.boolean(),
-  startedAt: external_exports.number(),
-  finishedAt: external_exports.number().nullable()
-});
-var BrowserDownloadAction = external_exports.enum(["cancel", "open", "reveal"]);
-var MAX_BROWSER_UPLOAD_BYTES = 20 * 1024 * 1024;
-var BrowserStatus = external_exports.object({
-  state: external_exports.enum(["app-closed", "starting", "ready", "error"]),
-  message: external_exports.string().max(2e3).optional(),
-  running: external_exports.boolean()
-});
-var SnapshotRef = external_exports.string().regex(/^(?:f\d+)?e\d+$/);
-var BrowserUploadOptions = external_exports.object({ ref: SnapshotRef, files: external_exports.array(external_exports.string().min(1).max(32768)).min(1).max(10) });
-var BrowserUrl = external_exports.string().trim().min(1).max(4096);
-var BrowserNavigateTo = external_exports.union([
-  external_exports.object({ url: BrowserUrl }),
-  external_exports.object({ history: external_exports.enum(["back", "forward", "reload"]) })
-]);
-var browserActions = {
-  click: external_exports.object({
-    ref: SnapshotRef,
-    button: external_exports.enum(["left", "right", "middle"]).optional(),
-    double: external_exports.boolean().optional(),
-    modifiers: external_exports.array(external_exports.enum(["Alt", "Control", "Meta", "Shift"])).max(4).optional()
-  }),
-  // submit presses Enter after the text; replace clears the field first.
-  type: external_exports.object({ ref: SnapshotRef, text: external_exports.string().max(1e4), submit: external_exports.boolean().optional(), replace: external_exports.boolean().optional() }),
-  press: external_exports.object({ key: external_exports.string().min(1).max(40) }),
-  hover: external_exports.object({ ref: SnapshotRef }),
-  // Scrolls the element under ref, or the page; amount in wheel ticks of roughly a hundred pixels.
-  scroll: external_exports.object({ ref: SnapshotRef.optional(), direction: external_exports.enum(["up", "down", "left", "right"]), amount: external_exports.number().int().min(1).max(20).optional() }),
-  select: external_exports.object({ ref: SnapshotRef, values: external_exports.array(external_exports.string().max(500)).min(1).max(50) }),
-  // Waits for text to appear, for text to go, or for a number of seconds.
-  wait: external_exports.object({ text: external_exports.string().max(500).optional(), textGone: external_exports.string().max(500).optional(), seconds: external_exports.number().min(0).max(30).optional() })
-};
-var BrowserScreenshotOptions = external_exports.object({ fullPage: external_exports.boolean().optional(), ref: SnapshotRef.optional() });
-var BrowserNavigationOutcome = external_exports.enum(["done", "awaiting-host", "denied"]);
-var BrowserNavigation = external_exports.object({ tab: BrowserTab, outcome: BrowserNavigationOutcome, snapshot: external_exports.string().nullable() });
-var BrowserAction = external_exports.object({ tab: BrowserTab, snapshot: external_exports.string() });
-var BrowserSnapshot = external_exports.object({ tab: BrowserTab, snapshot: external_exports.string() });
-var BrowserScreenshot = external_exports.object({ tab: BrowserTab, image: ChatImage });
-var BrowserConsole = external_exports.object({
-  messages: external_exports.array(external_exports.object({ level: external_exports.string().max(20), text: external_exports.string().max(4e3), at: external_exports.number() })),
-  errors: external_exports.array(external_exports.string().max(4e3)),
-  failedRequests: external_exports.array(external_exports.object({ method: external_exports.string().max(10), url: external_exports.string().max(4096), failure: external_exports.string().max(500) })),
-  network: external_exports.array(external_exports.object({
-    id: external_exports.string().max(80),
-    method: external_exports.string().max(20),
-    url: external_exports.string().max(4096),
-    resourceType: external_exports.string().max(50),
-    status: external_exports.number().nullable(),
-    statusText: external_exports.string().max(200),
-    startedAt: external_exports.number(),
-    durationMs: external_exports.number().nullable(),
-    failure: external_exports.string().max(500).nullable()
-  })).optional(),
-  request: external_exports.object({
-    id: external_exports.string().max(80),
-    requestHeaders: external_exports.record(external_exports.string(), external_exports.string()),
-    requestBody: external_exports.string().max(8192).nullable(),
-    responseHeaders: external_exports.record(external_exports.string(), external_exports.string()),
-    responseBody: external_exports.string().max(16384).nullable(),
-    bodyNote: external_exports.enum(["unavailable", "binary", "large", "pending", "truncated"]).nullable()
-  }).optional()
-});
-var BrowserCaptureMode = external_exports.enum(["page", "selection", "element", "region"]);
-var BrowserCaptureOptions = external_exports.object({ mode: BrowserCaptureMode, accent: external_exports.string().max(100).optional() });
-var BrowserPageContext = external_exports.object({
-  url: external_exports.string().max(4096),
-  title: external_exports.string().max(500),
-  text: external_exports.string().max(16e3),
-  selector: external_exports.string().max(2e3).nullable(),
-  html: external_exports.string().max(16e3),
-  styles: external_exports.record(external_exports.string(), external_exports.string()),
-  image: ChatImage.optional()
-});
-
-// packages/protocol/src/skills.ts
-var SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
-var SkillRepoId = external_exports.string().regex(SLUG);
-var SkillName = external_exports.string().regex(SLUG);
-var CommitSha = external_exports.string().regex(/^[0-9a-f]{40}$/);
-var SkillEntry = external_exports.object({ name: SkillName, description: external_exports.string(), dir: external_exports.string(), problem: external_exports.string().nullable() });
-var SkillActivation = external_exports.object({
-  mode: external_exports.enum(["all", "selected"]),
-  skills: external_exports.array(SkillName).max(1e4),
-  agents: external_exports.array(AgentKind).max(100).nullable()
-});
-var SkillRepo = external_exports.object({
-  id: SkillRepoId,
-  url: external_exports.string(),
-  commit: CommitSha,
-  previousCommit: CommitSha.nullable(),
-  installedAt: external_exports.number(),
-  updatedAt: external_exports.number(),
-  plugin: external_exports.object({ name: external_exports.string(), version: external_exports.string() }).nullable(),
-  skills: external_exports.array(SkillEntry),
-  // Absent on repositories installed before activation settings; preserves feature-provided skills.
-  activation: SkillActivation.optional(),
-  previousActivation: SkillActivation.nullable().optional()
-});
-var LocalSkill = external_exports.object({ name: external_exports.string(), description: external_exports.string(), dir: external_exports.string() });
-var LocalSkillFolder = external_exports.object({ dir: external_exports.string(), agents: external_exports.array(AgentKind), skills: external_exports.array(LocalSkill) });
-var SkillRef = external_exports.object({ repo: SkillRepoId, skill: SkillName });
-var SkillChange = external_exports.object({ name: SkillName, kind: external_exports.enum(["added", "changed", "removed"]) });
-var SkillUpdateCheck = external_exports.object({ id: SkillRepoId, current: CommitSha, latest: CommitSha, behind: external_exports.number().int().nonnegative(), skills: external_exports.array(SkillEntry), changes: external_exports.array(SkillChange).optional() });
-var RecommendedSkillRepo = external_exports.object({ url: external_exports.string(), name: external_exports.string(), description: external_exports.string(), license: external_exports.string(), homepage: external_exports.string(), skills: external_exports.array(SkillName) });
-var SkillSearchResult = external_exports.object({ url: external_exports.string(), source: external_exports.string(), skills: external_exports.array(external_exports.string()), installs: external_exports.number().int().nonnegative() });
-
-// packages/protocol/src/agents/model-prices.ts
-var UPDATED = "2026-10-14";
-var CLAUDE_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing";
-var OPENAI_SOURCE = "https://developers.openai.com/api/docs/pricing";
-var GEMINI_SOURCE = "https://ai.google.dev/gemini-api/docs/pricing";
-var rates = (input2, output2, read = input2 / 10) => ({ input: input2, output: output2, cacheRead: read, cacheWrite: input2 * 1.25, cacheWrite1h: input2 * 2 });
-var price = (model, source, costs) => ({ model, source, rates: costs, updatedAt: UPDATED, validFrom: UPDATED });
-var long = (entry, above, costs) => ({ ...entry, longContext: { above, rates: costs } });
-var CLAUDE_PRICES = [
-  price("claude-opus-5-5", CLAUDE_SOURCE, rates(4, 20, 0.2)),
-  price("claude-sonnet-5-5", CLAUDE_SOURCE, rates(2, 10, 0.1)),
-  long(price("claude-haiku-5-5", CLAUDE_SOURCE, rates(0.1, 0.5)), 1e5, rates(0.5, 2.5)),
-  ...["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"].map((model) => price(model, CLAUDE_SOURCE, rates(5, 25))),
-  price("claude-sonnet-5", CLAUDE_SOURCE, rates(2, 10)),
-  price("claude-sonnet-4-6", CLAUDE_SOURCE, rates(3, 15)),
-  long(price("claude-sonnet-4-5", CLAUDE_SOURCE, rates(3, 15)), 2e5, rates(6, 22.5)),
-  price("claude-haiku-4-5", CLAUDE_SOURCE, rates(1, 5))
-];
-var CODEX_RATES = [
-  ["gpt-6.1-sol", 2, 10, 0.1],
-  ["gpt-6-sol", 2, 10, 0.2],
-  ["gpt-6-astra", 10, 50, 1],
-  ["gpt-6-luna", 0.1, 0.5, 0.01],
-  ["gpt-5.6-sol", 4, 20, 0.4],
-  ["gpt-5.6-luna", 0.2, 1.2, 0.02]
-];
-var codexRates = (input2, output2, read) => ({ ...rates(input2, output2, read), cacheWrite1h: input2 * 1.25 });
-var CODEX_PRICES = CODEX_RATES.map(
-  ([model, input2, output2, read]) => long(price(model, OPENAI_SOURCE, codexRates(input2, output2, read)), 272e3, codexRates(input2 * 2, output2 * 1.5, read * 2))
-);
-var flash = price("gemini-3.8-flash", GEMINI_SOURCE, { ...rates(0.75, 3.75, 0.075), cacheWrite: 0.75, cacheWrite1h: 0.75 });
-var geminiRates = (input2, output2) => ({ ...rates(input2, output2), cacheWrite: input2, cacheWrite1h: input2 });
-var GEMINI_PRICES = [
-  { ...flash, validUntil: "2026-12-31" },
-  { ...flash, validFrom: "2027-01-01", rates: geminiRates(1.5, 7.5) },
-  long({ ...price("gemini-2.5-pro", GEMINI_SOURCE, geminiRates(1.25, 10)), updatedAt: "2026-10-29", validFrom: "2026-10-29" }, 2e5, geminiRates(2.5, 15)),
-  ...["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"].map((model) => long({ ...price(model, GEMINI_SOURCE, geminiRates(2, 12)), updatedAt: "2026-10-29", validFrom: "2026-10-29" }, 2e5, geminiRates(4, 18)))
-];
-var CURSOR_PRICES = [
-  ...CLAUDE_PRICES,
-  ...CODEX_PRICES,
-  ...GEMINI_PRICES
-];
-
-// packages/protocol/src/model-provider.ts
-var ProviderWire = external_exports.enum(["anthropic", "openai-responses", "openai-chat"]);
-var MODEL_PROVIDER_PRESET_IDS = [
-  "volcengine-agent-plan",
-  "volcengine-coding-plan",
-  "zhipu-glm-coding",
-  "zai-glm-coding",
-  "kimi-code",
-  "minimax-cn",
-  "minimax",
-  "bailian-token-plan",
-  "deepseek"
-];
-var ModelProviderPresetId = external_exports.enum(MODEL_PROVIDER_PRESET_IDS);
-var ModelProviderPreset = external_exports.union([ModelProviderPresetId, external_exports.literal("custom")]);
-var LOCAL_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]"]);
-function providerUrlProblem(text) {
-  let url2;
-  try {
-    url2 = new URL(text);
-  } catch {
-    return "invalid";
-  }
-  if (url2.protocol !== "https:" && !(url2.protocol === "http:" && LOCAL_HOSTS.has(url2.hostname))) return url2.protocol === "http:" ? "insecure" : "invalid";
-  if (url2.username || url2.password) return "credentials";
-  if (url2.search || url2.hash) return "query";
-  return null;
-}
-var ProviderUrl = external_exports.string().trim().max(2048).refine((text) => providerUrlProblem(text) === null);
-var PROVIDER_CLAUDE_ENV = ["API_TIMEOUT_MS", "ENABLE_TOOL_SEARCH", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"];
-var ProviderClaudeEnv = external_exports.enum(PROVIDER_CLAUDE_ENV);
-var RESERVED_HEADERS = /* @__PURE__ */ new Set(["authorization", "proxy-authorization", "x-api-key", "host", "content-length", "content-type", "transfer-encoding", "connection"]);
-var PROVIDER_HEADER_LIMIT = 20;
-function providerHeaderProblem(name, value) {
-  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/.test(name)) return "name";
-  if (RESERVED_HEADERS.has(name.toLowerCase())) return "reserved";
-  if (value.length > 1e3 || /[\r\n\0]/.test(value)) return "value";
-  return null;
-}
-var ProviderHeaders = external_exports.record(external_exports.string(), external_exports.string()).refine((headers) => Object.entries(headers).every(([name, value]) => providerHeaderProblem(name, value) === null)).refine((headers) => Object.keys(headers).length <= PROVIDER_HEADER_LIMIT && new Set(Object.keys(headers).map((name) => name.toLowerCase())).size === Object.keys(headers).length);
-var ProviderSmallJobs = external_exports.enum(["provider", "account", "off"]);
-var AnthropicEndpoint = external_exports.object({
-  baseUrl: ProviderUrl,
-  auth: external_exports.enum(["auth_token", "api_key"]),
-  env: external_exports.partialRecord(ProviderClaudeEnv, external_exports.string().max(200))
-});
-var OpenAiEndpoint = external_exports.object({
-  chatUrl: ProviderUrl.nullable(),
-  responsesUrl: ProviderUrl.nullable()
-}).refine((endpoint) => endpoint.chatUrl !== null || endpoint.responsesUrl !== null);
-var ProviderModel = external_exports.object({
-  id: external_exports.string().trim().min(1).max(200),
-  label: external_exports.string().trim().max(200).nullable(),
-  contextWindow: external_exports.number().int().positive().nullable(),
-  maxOutput: external_exports.number().int().positive().nullable(),
-  efforts: external_exports.array(external_exports.string().min(1).max(40)).max(10),
-  reasoningSummaries: external_exports.boolean().optional(),
-  images: external_exports.boolean().optional()
-});
-var ModelProvider = external_exports.object({
-  id: ModelProviderId,
-  name: external_exports.string().trim().min(1).max(60),
-  // A preset a newer core knows reads as custom: its endpoints come resolved, and one unknown id
-  // must not fail the whole list.
-  preset: ModelProviderPreset.catch("custom"),
-  anthropic: AnthropicEndpoint.nullable(),
-  openai: OpenAiEndpoint.nullable(),
-  models: external_exports.array(ProviderModel).min(1).max(100),
-  defaultModel: external_exports.string(),
-  smallModel: external_exports.string(),
-  agents: external_exports.array(AgentKind),
-  // A preset's provider whose models are the preset's own, which follow it from release to release.
-  // Older cores leave it out.
-  modelsFromPreset: external_exports.boolean().optional(),
-  // Older cores leave these out: no headers, small jobs on the provider.
-  headers: ProviderHeaders.optional(),
-  smallJobs: ProviderSmallJobs.optional(),
-  hasKey: external_exports.boolean(),
-  revision: external_exports.number().int().nonnegative(),
-  createdAt: external_exports.number(),
-  updatedAt: external_exports.number()
-});
-var ModelProviderInput = external_exports.object({
-  id: ModelProviderId.nullable(),
-  name: external_exports.string().trim().min(1).max(60),
-  preset: ModelProviderPreset,
-  anthropic: AnthropicEndpoint.nullable().optional(),
-  openai: OpenAiEndpoint.nullable().optional(),
-  models: external_exports.array(ProviderModel).min(1).max(100),
-  defaultModel: external_exports.string().trim().min(1),
-  smallModel: external_exports.string().trim().min(1),
-  agents: external_exports.array(AgentKind),
-  apiKey: external_exports.string().trim().min(1).max(4096).nullable(),
-  // Left out (an older client), what was saved stays.
-  headers: ProviderHeaders.optional(),
-  smallJobs: ProviderSmallJobs.optional()
-});
-var ModelProviderCheck = external_exports.object({
-  wire: ProviderWire,
-  model: external_exports.string(),
-  ok: external_exports.boolean(),
-  status: external_exports.number().int().nullable(),
-  message: external_exports.string().nullable(),
-  latencyMs: external_exports.number().nullable()
-});
-var ModelProviderProbe = external_exports.object({ ok: external_exports.boolean(), checks: external_exports.array(ModelProviderCheck), at: external_exports.number() });
-var ModelProviderModelsQuery = external_exports.object({
-  id: ModelProviderId.nullable(),
-  preset: ModelProviderPreset,
-  anthropic: AnthropicEndpoint.nullable().optional(),
-  openai: OpenAiEndpoint.nullable().optional(),
-  apiKey: external_exports.string().trim().min(1).max(4096).nullable(),
-  headers: ProviderHeaders.optional()
-});
-var ModelProviderModels = external_exports.object({
-  models: external_exports.array(ProviderModel),
-  endpoints: external_exports.array(external_exports.object({ wire: ProviderWire, ok: external_exports.boolean(), count: external_exports.number().int().nonnegative(), status: external_exports.number().int().nullable(), message: external_exports.string().nullable() }))
-});
-var ProviderRoute = external_exports.object({
-  providerId: ModelProviderId,
-  name: external_exports.string(),
-  wire: ProviderWire,
-  baseUrl: external_exports.string(),
-  anthropic: AnthropicEndpoint.nullable(),
-  key: external_exports.string(),
-  models: external_exports.array(ProviderModel),
-  defaultModel: external_exports.string(),
-  smallModel: external_exports.string(),
-  // Absent on stages that ran before them: no headers, small jobs on the provider.
-  headers: ProviderHeaders.optional(),
-  smallJobs: ProviderSmallJobs.optional()
-});
-var ConversationRoute = external_exports.object({
-  providerId: ModelProviderId,
-  name: external_exports.string().nullable(),
-  reason: external_exports.enum(["served", "agent-unsupported", "unavailable"])
 });
 
 // packages/protocol/src/task-limits.ts
@@ -20997,6 +20560,512 @@ var Task = external_exports.object({
   launch: TaskLaunchOptions.default({}),
   createdAt: external_exports.number(),
   updatedAt: external_exports.number()
+});
+
+// packages/protocol/src/worktree.ts
+var ManagedWorktree = external_exports.object({
+  path: external_exports.string(),
+  // The project it belongs to: the repo's main working tree; null when git cannot say.
+  repo: external_exports.string().nullable(),
+  // Null when it has no branch checked out, as a planning checkout has not.
+  branch: external_exports.string().nullable(),
+  // The task it was laid out for, while that task is still there.
+  taskId: external_exports.string().nullable(),
+  // The conversation it was laid out for, while that conversation is still there. Older cores leave it out.
+  conversationId: external_exports.string().nullable().optional(),
+  // That conversation is archived: its worktree can go, and is laid out again from its branch when
+  // the conversation is taken out (feature archived-worktrees). Older cores leave it out.
+  conversationArchived: external_exports.boolean().optional(),
+  // The delegation it was laid out for (feature delegation-worktree): open while the member works.
+  // Its parent conversation may be gone by now.
+  agentCall: external_exports.object({ id: external_exports.string(), parentId: external_exports.string(), open: external_exports.boolean() }).nullable().optional(),
+  planning: external_exports.boolean(),
+  // Uncommitted files, untracked ones included; null when git could not read it.
+  changes: external_exports.number().int().nullable(),
+  // Commits on it that origin's default branch lacks; null when the repo has no such branch.
+  unmerged: external_exports.object({ count: external_exports.number().int(), into: external_exports.string() }).nullable(),
+  // Its task's pull request on the host (feature pull-requests): merged by squash, its commits
+  // still read as unmerged above. Older cores leave it out.
+  pullRequest: external_exports.object({ number: external_exports.number().int(), url: external_exports.string(), state: external_exports.enum(["open", "merged", "closed"]) }).nullable().optional(),
+  // Checked out at a commit no branch or other ref has, which only this worktree still holds.
+  alone: external_exports.boolean(),
+  // Its task's or conversation's agent is open in it: a terminal still running, or a chat mid-turn.
+  inUse: external_exports.boolean().default(false),
+  locked: external_exports.boolean(),
+  // When git last touched it (its index), else when its folder changed.
+  touchedAt: external_exports.number(),
+  // Bytes on disk; null until counted, which happens in the background.
+  size: external_exports.number().nullable()
+});
+var WorktreeCleanResult = external_exports.object({ path: external_exports.string(), removed: external_exports.boolean(), reason: external_exports.string().nullable() });
+
+// packages/protocol/src/changes.ts
+var CHANGE_KINDS = ["added", "modified", "deleted", "renamed", "untracked"];
+var ChangedFile = external_exports.object({
+  path: external_exports.string(),
+  // Where a renamed file came from.
+  oldPath: external_exports.string().nullable(),
+  kind: external_exports.enum(CHANGE_KINDS),
+  // null for a binary file, or an untracked one git has not counted.
+  additions: external_exports.number().int().nullable(),
+  deletions: external_exports.number().int().nullable()
+});
+var Commit = external_exports.object({ sha: external_exports.string(), subject: external_exports.string() });
+var RepoChanges = external_exports.object({
+  // The repo as the user picked it; the changes themselves are in its worktree.
+  path: external_exports.string(),
+  branch: external_exports.string().nullable(),
+  // Short id of the commit the branch started from; null without a worktree to compare.
+  base: external_exports.string().nullable(),
+  commits: external_exports.array(Commit),
+  files: external_exports.array(ChangedFile)
+});
+var FolderChanges = external_exports.object({
+  path: external_exports.string(),
+  branch: external_exports.string().nullable(),
+  // Short id of HEAD; null when the folder is not in a git repo, or the repo has no commit yet.
+  head: external_exports.string().nullable(),
+  // Commits since the conversation started; null when it began before Antumi recorded where.
+  commits: external_exports.array(Commit).nullable(),
+  // Uncommitted against HEAD, untracked included; the user's own edits land here too.
+  files: external_exports.array(ChangedFile)
+});
+var FileDiff = external_exports.object({ diff: external_exports.string(), truncated: external_exports.boolean() });
+
+// packages/protocol/src/git.ts
+var GitTarget = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.enum(["task", "conversation"]), id: external_exports.string().min(1), project: external_exports.string().min(1) }),
+  external_exports.object({ kind: external_exports.literal("project"), project: external_exports.string().min(1) })
+]);
+var gitParams = (shape) => external_exports.intersection(GitTarget, external_exports.object(shape));
+var Ref = external_exports.string().min(1).max(500);
+var GitTag = external_exports.object({ ref: Ref, name: external_exports.string(), sha: external_exports.string() });
+var GitWorkspace = external_exports.object({
+  path: external_exports.string(),
+  branch: external_exports.string().nullable(),
+  detached: external_exports.boolean(),
+  locked: external_exports.boolean(),
+  missing: external_exports.boolean(),
+  taskId: external_exports.string().optional(),
+  conversationIds: external_exports.array(external_exports.string()),
+  planning: external_exports.boolean()
+});
+var GitProject = external_exports.object({ project: external_exports.string(), directory: external_exports.string(), workspaces: external_exports.array(GitWorkspace) });
+var GitBranch = external_exports.object({
+  ref: Ref,
+  name: external_exports.string(),
+  remote: external_exports.string().nullable(),
+  sha: external_exports.string(),
+  upstream: external_exports.string().nullable(),
+  worktree: external_exports.string().nullable(),
+  protected: external_exports.boolean(),
+  // A local branch's commits its upstream lacks, and the upstream's it lacks, as of the last fetch.
+  ahead: external_exports.number().int().optional(),
+  behind: external_exports.number().int().optional(),
+  favorite: external_exports.boolean().optional()
+});
+var GitCommit = external_exports.object({ sha: external_exports.string(), parents: external_exports.array(external_exports.string()), subject: external_exports.string(), author: external_exports.string(), date: external_exports.string(), refs: external_exports.array(external_exports.string()), side: external_exports.enum(["current", "target"]).optional() });
+var GitHistory = external_exports.object({ commits: external_exports.array(GitCommit), tips: external_exports.array(external_exports.string()), next: external_exports.number().int().nullable() });
+var GitStatus = external_exports.object({
+  git: external_exports.boolean(),
+  directory: external_exports.string(),
+  branch: external_exports.string().nullable(),
+  head: external_exports.string().nullable(),
+  upstream: external_exports.string().nullable(),
+  ahead: external_exports.number().int(),
+  behind: external_exports.number().int(),
+  changes: external_exports.number().int(),
+  branches: external_exports.array(GitBranch),
+  remotes: external_exports.array(external_exports.string()),
+  blocker: external_exports.string().nullable(),
+  operation: external_exports.enum(["merge", "other"]).nullable(),
+  conflicts: external_exports.array(external_exports.string()),
+  // The 'other' operation is a rebase, which a core with git-update carries on like a merge.
+  rebase: external_exports.boolean().optional(),
+  // Or a cherry-pick or revert, carried on and aborted the same way by a core with git-cherry-pick.
+  picking: external_exports.enum(["cherry-pick", "revert"]).optional(),
+  tags: external_exports.array(GitTag).optional(),
+  recentBranches: external_exports.array(Ref).optional(),
+  taskId: external_exports.string().optional(),
+  readOnly: external_exports.boolean().optional()
+});
+var GitDetail = external_exports.object({ commit: GitCommit, message: external_exports.string(), parent: external_exports.string().nullable(), files: external_exports.array(ChangedFile) });
+var GitComparison = external_exports.object({ base: external_exports.string(), target: external_exports.string(), ancestor: external_exports.string().nullable(), ahead: external_exports.number(), behind: external_exports.number(), commits: external_exports.array(GitCommit), files: external_exports.array(ChangedFile) });
+var GitAction = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("switch"), ref: Ref }),
+  // A commit checked out with no branch (detached HEAD); needs git-commit-actions.
+  external_exports.object({ kind: external_exports.literal("detach"), ref: Ref }),
+  external_exports.object({ kind: external_exports.literal("create"), name: Ref, ref: Ref, checkout: external_exports.boolean() }),
+  // A lightweight tag on a commit, kept local; needs git-commit-actions.
+  external_exports.object({ kind: external_exports.literal("tag"), name: Ref, ref: Ref }),
+  external_exports.object({ kind: external_exports.literal("rename"), ref: Ref, name: Ref }),
+  external_exports.object({ kind: external_exports.literal("delete"), ref: Ref }),
+  external_exports.object({ kind: external_exports.literal("fetch"), remote: external_exports.string().optional() }),
+  external_exports.object({ kind: external_exports.literal("pull") }),
+  // A local branch brought up to its upstream, as IntelliJ's Update: fetched first; the branch
+  // checked out takes the upstream in by method once the two have diverged, its uncommitted
+  // changes stashed and put back; any other only fast-forwards. Needs git-update.
+  external_exports.object({ kind: external_exports.literal("update"), ref: Ref, method: external_exports.enum(["merge", "rebase"]).optional() }),
+  // name: the remote branch; left out, the branch's own name, and a branch whose upstream has
+  // another name is refused (as git's push.default=simple). from: the local branch the user saw,
+  // refused once the checkout has moved on (needs git-push-target). The upstream is set only when
+  // the branch has none.
+  // force: --force-with-lease, against the remote branch as last fetched; needs git-force-push.
+  external_exports.object({ kind: external_exports.literal("push"), remote: external_exports.string().optional(), name: Ref.optional(), from: Ref.optional(), force: external_exports.boolean().optional() }),
+  // A local branch set to track a remote one (refs/remotes/…), or to track none; needs git-push-target.
+  external_exports.object({ kind: external_exports.literal("track"), ref: Ref, upstream: Ref.nullable() }),
+  // amend: folds the changes into the commit checked out, its message replaced; needs git-amend.
+  external_exports.object({ kind: external_exports.literal("commit"), message: external_exports.string().trim().min(1).max(1e4), push: external_exports.boolean(), amend: external_exports.boolean().optional() }),
+  external_exports.object({ kind: external_exports.literal("merge"), ref: Ref }),
+  // A commit's change applied onto the current branch as a new commit, or undone by one; a merge
+  // commit by its first parent. Needs git-cherry-pick.
+  external_exports.object({ kind: external_exports.literal("cherryPick"), sha: Ref }),
+  external_exports.object({ kind: external_exports.literal("revert"), sha: Ref }),
+  external_exports.object({ kind: external_exports.literal("rebase"), ref: Ref, from: Ref.optional() }),
+  external_exports.object({ kind: external_exports.literal("resolve"), file: external_exports.string().min(1) }),
+  external_exports.object({ kind: external_exports.literal("continue") }),
+  external_exports.object({ kind: external_exports.literal("abort") })
+]);
+var GitResult = external_exports.object({
+  state: external_exports.enum(["done", "conflicts"]),
+  commit: external_exports.string().optional(),
+  branch: external_exports.string().optional(),
+  upstream: external_exports.string().optional(),
+  // From update: how many commits came in, and whether stashed changes went back ('kept' when they
+  // would not apply cleanly and wait in the stash).
+  incoming: external_exports.number().int().optional(),
+  stash: external_exports.enum(["restored", "kept"]).optional()
+});
+var GitOutgoing = external_exports.object({ commits: external_exports.array(GitCommit), total: external_exports.number().int(), isNew: external_exports.boolean() });
+
+// packages/protocol/src/terminal.ts
+var Terminal = external_exports.object({
+  id: external_exports.string().uuid(),
+  sessionId: external_exports.string(),
+  cwd: external_exports.string(),
+  title: external_exports.string(),
+  createdAt: external_exports.number(),
+  // A terminal an agent opened to run a command: the conversation it belongs to, the command, and
+  // once the command ends, its exit code; it stays until explicitly closed. User-started CLI
+  // installers have a command without a conversation. Interactive shells have neither.
+  conversationId: external_exports.string().nullable().optional(),
+  command: external_exports.string().nullable().optional(),
+  exited: external_exports.boolean().optional(),
+  exitCode: external_exports.number().int().nullable().optional(),
+  // A project's own command Antumi ran in a worktree (ProjectConfig), not the agent's.
+  purpose: external_exports.enum(["setup", "check"]).nullable().optional()
+});
+var TerminalCommandFields = external_exports.object({
+  // Empty: the command names itself.
+  label: external_exports.string().trim().max(80),
+  command: external_exports.string().trim().min(1).max(4e3),
+  // Off, the command lands on the prompt for the user to finish before pressing Enter.
+  run: external_exports.boolean(),
+  // Offered only in terminals inside this folder or one of its worktrees; null, in every terminal.
+  projectPath: external_exports.string().min(1).nullable()
+});
+var TerminalCommand = TerminalCommandFields.extend({ id: external_exports.string().uuid(), createdAt: external_exports.number() });
+var TerminalOutput = external_exports.object({
+  id: external_exports.string().uuid(),
+  command: external_exports.string(),
+  output: external_exports.string(),
+  // The output was longer than what came back.
+  truncated: external_exports.boolean(),
+  running: external_exports.boolean(),
+  exitCode: external_exports.number().int().nullable()
+});
+var TerminalRun = external_exports.discriminatedUnion("outcome", [
+  external_exports.object({ outcome: external_exports.literal("started"), terminal: Terminal }),
+  external_exports.object({ outcome: external_exports.literal("awaiting") }),
+  external_exports.object({ outcome: external_exports.literal("denied") })
+]);
+
+// packages/protocol/src/bookmarks.ts
+var MAX_BOOKMARKS = 5e3;
+var BookmarkUrl = external_exports.string().trim().max(4096).refine((url2) => /^https?:\/\/[^/\s]/i.test(url2), { message: "not an http(s) URL" });
+var BookmarkFields = external_exports.object({
+  // Empty: the address names it.
+  title: external_exports.string().trim().max(500),
+  url: BookmarkUrl,
+  // Where it sat in the browser it came from ("Bookmarks bar / Work"); null when added here.
+  folder: external_exports.string().trim().min(1).max(500).nullable()
+});
+var Bookmark = BookmarkFields.extend({ id: external_exports.string().uuid(), createdAt: external_exports.number() });
+var BookmarkImport = external_exports.object({ added: external_exports.number().int(), skipped: external_exports.number().int() });
+
+// packages/protocol/src/browser-history.ts
+var MAX_BROWSER_HISTORY_RESULTS = 200;
+var BrowserHistoryEntry = external_exports.object({
+  url: external_exports.string().max(4096),
+  // The conversation whose agent opened it, or null for the user.
+  conversationId: external_exports.string().uuid().nullable(),
+  title: external_exports.string().max(500),
+  visitedAt: external_exports.number(),
+  visits: external_exports.number().int()
+});
+var BrowserHistorySearch = external_exports.object({
+  query: external_exports.string().max(500).default(""),
+  agents: external_exports.boolean().default(false),
+  order: external_exports.enum(["recent", "frequent"]).default("recent"),
+  limit: external_exports.number().int().min(1).max(MAX_BROWSER_HISTORY_RESULTS).default(50)
+});
+
+// packages/protocol/src/browser-sites.ts
+var BrowserSite = external_exports.object({
+  host: external_exports.string().min(1).max(253),
+  allowedAt: external_exports.number()
+});
+
+// packages/protocol/src/ports.ts
+var PortRef = external_exports.object({
+  sessionId: external_exports.string(),
+  pid: external_exports.number().int().positive(),
+  startedAt: external_exports.string().min(1),
+  port: external_exports.number().int().min(1).max(65535),
+  address: external_exports.string().min(1)
+});
+var HostedPort = PortRef.extend({ command: external_exports.string(), canStop: external_exports.boolean(), cwd: external_exports.string().optional(), owner: external_exports.string().optional() });
+var ListeningPort = HostedPort.extend({
+  terminalId: external_exports.string().uuid().nullable(),
+  conversationId: external_exports.string().uuid().nullable(),
+  taskId: external_exports.string().nullable(),
+  cwd: external_exports.string(),
+  label: external_exports.string().nullable()
+});
+var PortList = external_exports.object({ ports: external_exports.array(ListeningPort), problem: external_exports.string().nullable() });
+var PortLabels = external_exports.object({ ports: external_exports.array(external_exports.object({ port: external_exports.number().int().min(1).max(65535), label: external_exports.string().trim().min(1).max(80) })).max(200) });
+
+// packages/protocol/src/project-config.ts
+var ProjectCommand = external_exports.string().trim().min(1).max(4e3);
+var ProjectPullRequestDefaults = external_exports.object({
+  base: external_exports.string().trim().min(1).max(500).optional(),
+  draft: external_exports.boolean().optional()
+});
+var ProjectConfig = external_exports.object({
+  copy: external_exports.array(external_exports.string().trim().min(1).max(500)).max(100).optional(),
+  setup: ProjectCommand.optional(),
+  check: ProjectCommand.optional(),
+  pullRequest: ProjectPullRequestDefaults.optional()
+});
+var ProjectConfigInfo = external_exports.object({
+  path: external_exports.string(),
+  config: ProjectConfig,
+  hash: external_exports.string(),
+  trusted: external_exports.boolean()
+});
+
+// packages/protocol/src/skills.ts
+var SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
+var SkillRepoId = external_exports.string().regex(SLUG);
+var SkillName = external_exports.string().regex(SLUG);
+var CommitSha = external_exports.string().regex(/^[0-9a-f]{40}$/);
+var SkillEntry = external_exports.object({ name: SkillName, description: external_exports.string(), dir: external_exports.string(), problem: external_exports.string().nullable() });
+var SkillActivation = external_exports.object({
+  mode: external_exports.enum(["all", "selected"]),
+  skills: external_exports.array(SkillName).max(1e4),
+  agents: external_exports.array(AgentKind).max(100).nullable()
+});
+var SkillRepo = external_exports.object({
+  id: SkillRepoId,
+  url: external_exports.string(),
+  commit: CommitSha,
+  previousCommit: CommitSha.nullable(),
+  installedAt: external_exports.number(),
+  updatedAt: external_exports.number(),
+  plugin: external_exports.object({ name: external_exports.string(), version: external_exports.string() }).nullable(),
+  skills: external_exports.array(SkillEntry),
+  // Absent on repositories installed before activation settings; preserves feature-provided skills.
+  activation: SkillActivation.optional(),
+  previousActivation: SkillActivation.nullable().optional()
+});
+var LocalSkill = external_exports.object({ name: external_exports.string(), description: external_exports.string(), dir: external_exports.string() });
+var LocalSkillFolder = external_exports.object({ dir: external_exports.string(), agents: external_exports.array(AgentKind), skills: external_exports.array(LocalSkill) });
+var SkillRef = external_exports.object({ repo: SkillRepoId, skill: SkillName });
+var SkillChange = external_exports.object({ name: SkillName, kind: external_exports.enum(["added", "changed", "removed"]) });
+var SkillUpdateCheck = external_exports.object({ id: SkillRepoId, current: CommitSha, latest: CommitSha, behind: external_exports.number().int().nonnegative(), skills: external_exports.array(SkillEntry), changes: external_exports.array(SkillChange).optional() });
+var RecommendedSkillRepo = external_exports.object({ url: external_exports.string(), name: external_exports.string(), description: external_exports.string(), license: external_exports.string(), homepage: external_exports.string(), skills: external_exports.array(SkillName) });
+var SkillSearchResult = external_exports.object({ url: external_exports.string(), source: external_exports.string(), skills: external_exports.array(external_exports.string()), installs: external_exports.number().int().nonnegative() });
+
+// packages/protocol/src/agents/model-prices.ts
+var UPDATED = "2026-10-14";
+var CLAUDE_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing";
+var OPENAI_SOURCE = "https://developers.openai.com/api/docs/pricing";
+var GEMINI_SOURCE = "https://ai.google.dev/gemini-api/docs/pricing";
+var rates = (input2, output2, read = input2 / 10) => ({ input: input2, output: output2, cacheRead: read, cacheWrite: input2 * 1.25, cacheWrite1h: input2 * 2 });
+var price = (model2, source, costs) => ({ model: model2, source, rates: costs, updatedAt: UPDATED, validFrom: UPDATED });
+var long = (entry, above, costs) => ({ ...entry, longContext: { above, rates: costs } });
+var CLAUDE_PRICES = [
+  price("claude-opus-5-5", CLAUDE_SOURCE, rates(4, 20, 0.2)),
+  price("claude-sonnet-5-5", CLAUDE_SOURCE, rates(2, 10, 0.1)),
+  long(price("claude-haiku-5-5", CLAUDE_SOURCE, rates(0.1, 0.5)), 1e5, rates(0.5, 2.5)),
+  ...["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"].map((model2) => price(model2, CLAUDE_SOURCE, rates(5, 25))),
+  price("claude-sonnet-5", CLAUDE_SOURCE, rates(2, 10)),
+  price("claude-sonnet-4-6", CLAUDE_SOURCE, rates(3, 15)),
+  long(price("claude-sonnet-4-5", CLAUDE_SOURCE, rates(3, 15)), 2e5, rates(6, 22.5)),
+  price("claude-haiku-4-5", CLAUDE_SOURCE, rates(1, 5))
+];
+var CODEX_RATES = [
+  ["gpt-6.1-sol", 2, 10, 0.1],
+  ["gpt-6-sol", 2, 10, 0.2],
+  ["gpt-6-astra", 10, 50, 1],
+  ["gpt-6-luna", 0.1, 0.5, 0.01],
+  ["gpt-5.6-sol", 4, 20, 0.4],
+  ["gpt-5.6-luna", 0.2, 1.2, 0.02]
+];
+var codexRates = (input2, output2, read) => ({ ...rates(input2, output2, read), cacheWrite1h: input2 * 1.25 });
+var CODEX_PRICES = CODEX_RATES.map(
+  ([model2, input2, output2, read]) => long(price(model2, OPENAI_SOURCE, codexRates(input2, output2, read)), 272e3, codexRates(input2 * 2, output2 * 1.5, read * 2))
+);
+var flash = price("gemini-3.8-flash", GEMINI_SOURCE, { ...rates(0.75, 3.75, 0.075), cacheWrite: 0.75, cacheWrite1h: 0.75 });
+var geminiRates = (input2, output2) => ({ ...rates(input2, output2), cacheWrite: input2, cacheWrite1h: input2 });
+var GEMINI_PRICES = [
+  { ...flash, validUntil: "2026-12-31" },
+  { ...flash, validFrom: "2027-01-01", rates: geminiRates(1.5, 7.5) },
+  long({ ...price("gemini-2.5-pro", GEMINI_SOURCE, geminiRates(1.25, 10)), updatedAt: "2026-10-29", validFrom: "2026-10-29" }, 2e5, geminiRates(2.5, 15)),
+  ...["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"].map((model2) => long({ ...price(model2, GEMINI_SOURCE, geminiRates(2, 12)), updatedAt: "2026-10-29", validFrom: "2026-10-29" }, 2e5, geminiRates(4, 18)))
+];
+var CURSOR_PRICES = [
+  ...CLAUDE_PRICES,
+  ...CODEX_PRICES,
+  ...GEMINI_PRICES
+];
+
+// packages/protocol/src/model-provider.ts
+var ProviderWire = external_exports.enum(["anthropic", "openai-responses", "openai-chat"]);
+var MODEL_PROVIDER_PRESET_IDS = [
+  "volcengine-agent-plan",
+  "volcengine-coding-plan",
+  "zhipu-glm-coding",
+  "zai-glm-coding",
+  "kimi-code",
+  "minimax-cn",
+  "minimax",
+  "bailian-token-plan",
+  "deepseek"
+];
+var ModelProviderPresetId = external_exports.enum(MODEL_PROVIDER_PRESET_IDS);
+var ModelProviderPreset = external_exports.union([ModelProviderPresetId, external_exports.literal("custom")]);
+var LOCAL_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]"]);
+function providerUrlProblem(text) {
+  let url2;
+  try {
+    url2 = new URL(text);
+  } catch {
+    return "invalid";
+  }
+  if (url2.protocol !== "https:" && !(url2.protocol === "http:" && LOCAL_HOSTS.has(url2.hostname))) return url2.protocol === "http:" ? "insecure" : "invalid";
+  if (url2.username || url2.password) return "credentials";
+  if (url2.search || url2.hash) return "query";
+  return null;
+}
+var ProviderUrl = external_exports.string().trim().max(2048).refine((text) => providerUrlProblem(text) === null);
+var PROVIDER_CLAUDE_ENV = ["API_TIMEOUT_MS", "ENABLE_TOOL_SEARCH", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"];
+var ProviderClaudeEnv = external_exports.enum(PROVIDER_CLAUDE_ENV);
+var RESERVED_HEADERS = /* @__PURE__ */ new Set(["authorization", "proxy-authorization", "x-api-key", "host", "content-length", "content-type", "transfer-encoding", "connection"]);
+var PROVIDER_HEADER_LIMIT = 20;
+function providerHeaderProblem(name, value) {
+  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/.test(name)) return "name";
+  if (RESERVED_HEADERS.has(name.toLowerCase())) return "reserved";
+  if (value.length > 1e3 || /[\r\n\0]/.test(value)) return "value";
+  return null;
+}
+var ProviderHeaders = external_exports.record(external_exports.string(), external_exports.string()).refine((headers) => Object.entries(headers).every(([name, value]) => providerHeaderProblem(name, value) === null)).refine((headers) => Object.keys(headers).length <= PROVIDER_HEADER_LIMIT && new Set(Object.keys(headers).map((name) => name.toLowerCase())).size === Object.keys(headers).length);
+var ProviderSmallJobs = external_exports.enum(["provider", "account", "off"]);
+var AnthropicEndpoint = external_exports.object({
+  baseUrl: ProviderUrl,
+  auth: external_exports.enum(["auth_token", "api_key"]),
+  env: external_exports.partialRecord(ProviderClaudeEnv, external_exports.string().max(200))
+});
+var OpenAiEndpoint = external_exports.object({
+  chatUrl: ProviderUrl.nullable(),
+  responsesUrl: ProviderUrl.nullable()
+}).refine((endpoint) => endpoint.chatUrl !== null || endpoint.responsesUrl !== null);
+var ProviderModel = external_exports.object({
+  id: external_exports.string().trim().min(1).max(200),
+  label: external_exports.string().trim().max(200).nullable(),
+  contextWindow: external_exports.number().int().positive().nullable(),
+  maxOutput: external_exports.number().int().positive().nullable(),
+  efforts: external_exports.array(external_exports.string().min(1).max(40)).max(10),
+  reasoningSummaries: external_exports.boolean().optional(),
+  images: external_exports.boolean().optional()
+});
+var ModelProvider = external_exports.object({
+  id: ModelProviderId,
+  name: external_exports.string().trim().min(1).max(60),
+  // A preset a newer core knows reads as custom: its endpoints come resolved, and one unknown id
+  // must not fail the whole list.
+  preset: ModelProviderPreset.catch("custom"),
+  anthropic: AnthropicEndpoint.nullable(),
+  openai: OpenAiEndpoint.nullable(),
+  models: external_exports.array(ProviderModel).min(1).max(100),
+  defaultModel: external_exports.string(),
+  smallModel: external_exports.string(),
+  agents: external_exports.array(AgentKind),
+  // A preset's provider whose models are the preset's own, which follow it from release to release.
+  // Older cores leave it out.
+  modelsFromPreset: external_exports.boolean().optional(),
+  // Older cores leave these out: no headers, small jobs on the provider.
+  headers: ProviderHeaders.optional(),
+  smallJobs: ProviderSmallJobs.optional(),
+  hasKey: external_exports.boolean(),
+  revision: external_exports.number().int().nonnegative(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+var ModelProviderInput = external_exports.object({
+  id: ModelProviderId.nullable(),
+  name: external_exports.string().trim().min(1).max(60),
+  preset: ModelProviderPreset,
+  anthropic: AnthropicEndpoint.nullable().optional(),
+  openai: OpenAiEndpoint.nullable().optional(),
+  models: external_exports.array(ProviderModel).min(1).max(100),
+  defaultModel: external_exports.string().trim().min(1),
+  smallModel: external_exports.string().trim().min(1),
+  agents: external_exports.array(AgentKind),
+  apiKey: external_exports.string().trim().min(1).max(4096).nullable(),
+  // Left out (an older client), what was saved stays.
+  headers: ProviderHeaders.optional(),
+  smallJobs: ProviderSmallJobs.optional()
+});
+var ModelProviderCheck = external_exports.object({
+  wire: ProviderWire,
+  model: external_exports.string(),
+  ok: external_exports.boolean(),
+  status: external_exports.number().int().nullable(),
+  message: external_exports.string().nullable(),
+  latencyMs: external_exports.number().nullable()
+});
+var ModelProviderProbe = external_exports.object({ ok: external_exports.boolean(), checks: external_exports.array(ModelProviderCheck), at: external_exports.number() });
+var ModelProviderModelsQuery = external_exports.object({
+  id: ModelProviderId.nullable(),
+  preset: ModelProviderPreset,
+  anthropic: AnthropicEndpoint.nullable().optional(),
+  openai: OpenAiEndpoint.nullable().optional(),
+  apiKey: external_exports.string().trim().min(1).max(4096).nullable(),
+  headers: ProviderHeaders.optional()
+});
+var ModelProviderModels = external_exports.object({
+  models: external_exports.array(ProviderModel),
+  endpoints: external_exports.array(external_exports.object({ wire: ProviderWire, ok: external_exports.boolean(), count: external_exports.number().int().nonnegative(), status: external_exports.number().int().nullable(), message: external_exports.string().nullable() }))
+});
+var ProviderRoute = external_exports.object({
+  providerId: ModelProviderId,
+  name: external_exports.string(),
+  wire: ProviderWire,
+  baseUrl: external_exports.string(),
+  anthropic: AnthropicEndpoint.nullable(),
+  key: external_exports.string(),
+  models: external_exports.array(ProviderModel),
+  defaultModel: external_exports.string(),
+  smallModel: external_exports.string(),
+  // Absent on stages that ran before them: no headers, small jobs on the provider.
+  headers: ProviderHeaders.optional(),
+  smallJobs: ProviderSmallJobs.optional()
+});
+var ConversationRoute = external_exports.object({
+  providerId: ModelProviderId,
+  name: external_exports.string().nullable(),
+  reason: external_exports.enum(["served", "agent-unsupported", "unavailable"])
 });
 
 // packages/protocol/src/usage.ts
@@ -21181,144 +21250,355 @@ var AgentCallResumeCheck = external_exports.object({
   redoneBy: external_exports.string().uuid().nullable()
 });
 
-// packages/protocol/src/changes.ts
-var CHANGE_KINDS = ["added", "modified", "deleted", "renamed", "untracked"];
-var ChangedFile = external_exports.object({
-  path: external_exports.string(),
-  // Where a renamed file came from.
-  oldPath: external_exports.string().nullable(),
-  kind: external_exports.enum(CHANGE_KINDS),
-  // null for a binary file, or an untracked one git has not counted.
-  additions: external_exports.number().int().nullable(),
-  deletions: external_exports.number().int().nullable()
+// packages/protocol/src/conversation.ts
+var ConversationRequest = external_exports.object({
+  requestId: external_exports.string(),
+  kind: external_exports.enum(["approval", "question"]).catch("question"),
+  // The approval's tool, as on its chat item; null for a question.
+  tool: external_exports.string().nullable(),
+  title: external_exports.string(),
+  decisions: external_exports.array(ChatDecision.catch("deny")),
+  open: external_exports.number().int().positive(),
+  // A question asked in passing (see the question item's async): nothing waits on it. Older
+  // cores leave it out.
+  async: external_exports.boolean().optional()
 });
-var Commit = external_exports.object({ sha: external_exports.string(), subject: external_exports.string() });
-var RepoChanges = external_exports.object({
-  // The repo as the user picked it; the changes themselves are in its worktree.
-  path: external_exports.string(),
-  branch: external_exports.string().nullable(),
-  // Short id of the commit the branch started from; null without a worktree to compare.
-  base: external_exports.string().nullable(),
-  commits: external_exports.array(Commit),
-  files: external_exports.array(ChangedFile)
+var ConversationDoing = external_exports.object({ tool: external_exports.string().nullable(), title: external_exports.string() });
+var Conversation = external_exports.object({
+  id: external_exports.string().uuid(),
+  title: external_exports.string(),
+  titleLocked: external_exports.boolean(),
+  agent: AgentKind,
+  // The agent's cwd: the first selected project, or the managed directory when no project is selected.
+  workspacePath: external_exports.string(),
+  // Ordered: primary project first, followed by additional directories.
+  projectPaths: external_exports.array(external_exports.string()),
+  // Folders the agent may read but never edit: a task's reference projects. Older cores leave it out.
+  referencePaths: external_exports.array(external_exports.string()).optional(),
+  managedWorkspace: external_exports.boolean(),
+  sessionId: external_exports.string().nullable(),
+  // Includes CLI checks and handshake, before the agent can take a message.
+  starting: external_exports.boolean().optional(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number(),
+  // The newest stage's last reported context, kept after its process exits. Older cores omit it.
+  context: ChatContextUse.nullable().optional(),
+  // How the agent last stopped: code is null when it was stopped rather than exiting on its own.
+  // null before any run has ended. Older cores leave it out.
+  lastExit: external_exports.object({ code: external_exports.number().int().nullable(), at: external_exports.number() }).nullable().optional(),
+  // Set while a chat-mode agent is running, to tell whether it works or waits on the user.
+  // suggestion: what the agent predicts the user will type next, once a turn has ended, until the
+  // next message; only when the user has them on. Older cores leave it out.
+  // request: while the turn waits on the user, the oldest request still open (an approval's
+  // title is its command or path, a question's its first question) and how many are open, so a
+  // list can answer a plain approval without opening the chat; otherwise a question the agent
+  // asked in passing and nobody has answered. Older cores leave it out.
+  chat: external_exports.object({
+    turn: ChatTurnActivity.catch("idle"),
+    suggestion: external_exports.string().nullable().optional(),
+    request: ConversationRequest.nullable().optional(),
+    // While the turn runs. Older cores leave it out.
+    doing: ConversationDoing.nullable().optional(),
+    // Running only on what the agent left in the background, its turn over: the model and effort
+    // change and a message starts a turn, as when idle. Older cores leave it out.
+    betweenTurns: external_exports.boolean().optional()
+  }).nullable().optional(),
+  // What the next chat stage starts with, as chosen or as the last stage left it: the permission
+  // mode, and the model and effort of the conversation's agent. Older cores leave it out.
+  chatOptions: external_exports.object({
+    permissionMode: external_exports.string().nullable(),
+    model: external_exports.string().nullable(),
+    effort: external_exports.string().nullable()
+  }).optional(),
+  // The task this conversation runs, which keeps it out of the free conversations. Older cores leave it out.
+  taskId: external_exports.string().nullable().optional(),
+  // Whether its latest stage may only plan: read-only, the plan kept rather than carried out.
+  planOnly: external_exports.boolean().optional(),
+  // When the user pinned it to the top of the list; null when it is not pinned. Older cores leave it out.
+  pinnedAt: external_exports.number().nullable().optional(),
+  // When the user put it away: out of the list and read-only until taken out again. Older cores
+  // leave it out.
+  archivedAt: external_exports.number().nullable().optional(),
+  // The routine whose run opened it, which keeps it out of the list: it is reached from the
+  // routine's history. Older cores leave it out.
+  routineId: external_exports.string().uuid().nullable().optional(),
+  // The conversation this one was forked from, at some message of it; the source may be gone
+  // since. Older cores leave it out.
+  forkedFromId: external_exports.string().uuid().nullable().optional(),
+  // The group chat it is a member's part of, which keeps it out of the list: it is reached from
+  // the group chat. Older cores leave it out.
+  discussionId: external_exports.string().uuid().nullable().optional(),
+  squadRunId: external_exports.string().uuid().nullable().optional(),
+  profile: AgentProfile.nullable().optional(),
+  parentConversationId: external_exports.string().uuid().nullable().optional(),
+  agentCallId: external_exports.string().uuid().nullable().optional(),
+  delegation: external_exports.object({ open: external_exports.number().int().nonnegative(), awaiting: external_exports.number().int().nonnegative(), writing: external_exports.boolean() }).optional(),
+  helperOf: external_exports.string().uuid().nullable().optional(),
+  workspaceReadOnly: external_exports.boolean().optional(),
+  // The issue it was opened to look into, from the inbox. Older cores leave it out.
+  source: TaskSource.nullable().optional(),
+  autoInvestigationId: external_exports.string().uuid().nullable().optional(),
+  // While core fetches that issue before its agent can start: the issue's text, then its images,
+  // which the agent waits a moment for. error: why the fetch stopped, reason its code; it can be retried
+  // (sources.retryInvestigation). Older cores leave it out, fetching before they answer.
+  preparing: external_exports.object({ step: external_exports.enum(["issue", "images"]).catch("issue"), error: external_exports.string().nullable(), reason: external_exports.string().optional() }).nullable().optional(),
+  // The model provider it was started on, fixed for good; null on the agents' own accounts. route:
+  // what its agent's next stage runs on. Older cores leave both out.
+  modelProvider: ModelProviderId.nullable().optional(),
+  route: ConversationRoute.nullable().optional(),
+  // Opened for someone asking from a chat platform: locked down, kept out of every list, and
+  // spoken in by core alone (docs/CHANNELS.md). Older cores leave it out.
+  channel: ConversationChannel.nullable().optional()
 });
-var FolderChanges = external_exports.object({
-  path: external_exports.string(),
-  branch: external_exports.string().nullable(),
-  // Short id of HEAD; null when the folder is not in a git repo, or the repo has no commit yet.
-  head: external_exports.string().nullable(),
-  // Commits since the conversation started; null when it began before Antumi recorded where.
-  commits: external_exports.array(Commit).nullable(),
-  // Uncommitted against HEAD, untracked included; the user's own edits land here too.
-  files: external_exports.array(ChangedFile)
+var ConversationConfiguration = Conversation.pick({ agent: true, projectPaths: true, modelProvider: true }).extend({
+  permissionMode: external_exports.string().nullable(),
+  model: external_exports.string().nullable(),
+  effort: external_exports.string().nullable()
 });
-var FileDiff = external_exports.object({ diff: external_exports.string(), truncated: external_exports.boolean() });
-
-// packages/protocol/src/git.ts
-var GitTarget = external_exports.discriminatedUnion("kind", [
-  external_exports.object({ kind: external_exports.enum(["task", "conversation"]), id: external_exports.string().min(1), project: external_exports.string().min(1) }),
-  external_exports.object({ kind: external_exports.literal("project"), project: external_exports.string().min(1) })
-]);
-var gitParams = (shape) => external_exports.intersection(GitTarget, external_exports.object(shape));
-var Ref = external_exports.string().min(1).max(500);
-var GitTag = external_exports.object({ ref: Ref, name: external_exports.string(), sha: external_exports.string() });
-var GitWorkspace = external_exports.object({
+var ConversationStage = external_exports.object({
+  id: external_exports.string().uuid(),
+  conversationId: external_exports.string().uuid(),
+  agent: AgentKind,
+  providerSessionId: external_exports.string().nullable(),
+  sessionId: external_exports.string().nullable(),
+  receivedSequence: external_exports.number().int().nonnegative(),
+  startedAt: external_exports.number(),
+  endedAt: external_exports.number().nullable(),
+  exitCode: external_exports.number().nullable(),
+  // A stage that may only plan (see Conversation.planOnly).
+  planOnly: external_exports.boolean().optional(),
+  // The model provider it ran on; null on the agent's own account. Older cores leave it out.
+  route: ProviderRoute.nullable().optional(),
+  // The agent account it ran on (AgentAccount.id); null on a provider. Older cores leave it out.
+  account: external_exports.string().nullable().optional()
+});
+var ConversationMessage = external_exports.object({
+  sequence: external_exports.number().int().positive(),
+  conversationId: external_exports.string().uuid(),
+  stageId: external_exports.string().uuid(),
+  role: external_exports.enum(["user", "assistant"]),
+  agent: AgentKind,
+  text: external_exports.string(),
+  eventKey: external_exports.string(),
+  complete: external_exports.boolean(),
+  createdAt: external_exports.number()
+});
+var ConversationSearchHit = external_exports.object({ conversationId: external_exports.string().uuid(), snippet: external_exports.string() });
+var ProjectHead = external_exports.object({
   path: external_exports.string(),
   branch: external_exports.string().nullable(),
   detached: external_exports.boolean(),
-  locked: external_exports.boolean(),
-  missing: external_exports.boolean(),
-  taskId: external_exports.string().optional(),
-  conversationIds: external_exports.array(external_exports.string()),
-  planning: external_exports.boolean()
+  // The tracked remote branch, null when there is none; ahead and behind count against it.
+  upstream: external_exports.string().nullable().optional(),
+  ahead: external_exports.number().int().nonnegative().optional(),
+  behind: external_exports.number().int().nonnegative().optional(),
+  // Uncommitted entries, untracked files included.
+  changes: external_exports.number().int().nonnegative().optional()
 });
-var GitProject = external_exports.object({ project: external_exports.string(), directory: external_exports.string(), workspaces: external_exports.array(GitWorkspace) });
-var GitBranch = external_exports.object({
-  ref: Ref,
-  name: external_exports.string(),
-  remote: external_exports.string().nullable(),
-  sha: external_exports.string(),
-  upstream: external_exports.string().nullable(),
-  worktree: external_exports.string().nullable(),
-  protected: external_exports.boolean(),
-  // A local branch's commits its upstream lacks, and the upstream's it lacks, as of the last fetch.
-  ahead: external_exports.number().int().optional(),
-  behind: external_exports.number().int().optional(),
-  favorite: external_exports.boolean().optional()
+var CommitPushResult = external_exports.object({
+  commit: external_exports.string(),
+  branch: external_exports.string(),
+  upstream: external_exports.string()
 });
-var GitCommit = external_exports.object({ sha: external_exports.string(), parents: external_exports.array(external_exports.string()), subject: external_exports.string(), author: external_exports.string(), date: external_exports.string(), refs: external_exports.array(external_exports.string()), side: external_exports.enum(["current", "target"]).optional() });
-var GitHistory = external_exports.object({ commits: external_exports.array(GitCommit), tips: external_exports.array(external_exports.string()), next: external_exports.number().int().nullable() });
-var GitStatus = external_exports.object({
+var CommitResult = external_exports.object({ commit: external_exports.string(), branch: external_exports.string() });
+var PushResult = external_exports.object({ branch: external_exports.string(), upstream: external_exports.string() });
+var BranchHolder = external_exports.object({
+  kind: external_exports.enum(["main", "conversation", "other"]),
+  conversationId: external_exports.string().optional(),
+  title: external_exports.string().optional(),
+  archived: external_exports.boolean().optional(),
+  // The folder is a worktree Antumi laid out, which it can clean (feature archived-worktrees).
+  managed: external_exports.boolean().optional()
+});
+var ProjectBranches = external_exports.object({
+  path: external_exports.string(),
   git: external_exports.boolean(),
-  directory: external_exports.string(),
+  // The branch checked out; null when HEAD is detached or there is no git.
   branch: external_exports.string().nullable(),
-  head: external_exports.string().nullable(),
-  upstream: external_exports.string().nullable(),
-  ahead: external_exports.number().int(),
-  behind: external_exports.number().int(),
-  changes: external_exports.number().int(),
-  branches: external_exports.array(GitBranch),
-  remotes: external_exports.array(external_exports.string()),
-  blocker: external_exports.string().nullable(),
-  operation: external_exports.enum(["merge", "other"]).nullable(),
-  conflicts: external_exports.array(external_exports.string()),
-  // The 'other' operation is a rebase, which a core with git-update carries on like a merge.
-  rebase: external_exports.boolean().optional(),
-  // Or a cherry-pick or revert, carried on and aborted the same way by a core with git-cherry-pick.
-  picking: external_exports.enum(["cherry-pick", "revert"]).optional(),
-  tags: external_exports.array(GitTag).optional(),
-  recentBranches: external_exports.array(Ref).optional(),
-  taskId: external_exports.string().optional(),
-  readOnly: external_exports.boolean().optional()
+  // Uncommitted changes to tracked files, which keep a switch from happening.
+  changes: external_exports.number().int().nonnegative(),
+  // Local branches, then remote-tracking ones, by full name.
+  refs: external_exports.array(external_exports.string()),
+  // Branches another worktree has checked out, which git will not check out here as well: the
+  // full name, and that worktree's folder.
+  elsewhere: external_exports.record(external_exports.string(), external_exports.string()),
+  // Who each of those is, by the same full name; absent from a core that does not say.
+  holders: external_exports.record(external_exports.string(), BranchHolder).optional(),
+  // Other conversations with an agent open in this folder, by title: a switch moves their files too.
+  sharedWith: external_exports.array(external_exports.string())
 });
-var GitDetail = external_exports.object({ commit: GitCommit, message: external_exports.string(), parent: external_exports.string().nullable(), files: external_exports.array(ChangedFile) });
-var GitComparison = external_exports.object({ base: external_exports.string(), target: external_exports.string(), ancestor: external_exports.string().nullable(), ahead: external_exports.number(), behind: external_exports.number(), commits: external_exports.array(GitCommit), files: external_exports.array(ChangedFile) });
-var GitAction = external_exports.discriminatedUnion("kind", [
-  external_exports.object({ kind: external_exports.literal("switch"), ref: Ref }),
-  // A commit checked out with no branch (detached HEAD); needs git-commit-actions.
-  external_exports.object({ kind: external_exports.literal("detach"), ref: Ref }),
-  external_exports.object({ kind: external_exports.literal("create"), name: Ref, ref: Ref, checkout: external_exports.boolean() }),
-  // A lightweight tag on a commit, kept local; needs git-commit-actions.
-  external_exports.object({ kind: external_exports.literal("tag"), name: Ref, ref: Ref }),
-  external_exports.object({ kind: external_exports.literal("rename"), ref: Ref, name: Ref }),
-  external_exports.object({ kind: external_exports.literal("delete"), ref: Ref }),
-  external_exports.object({ kind: external_exports.literal("fetch"), remote: external_exports.string().optional() }),
-  external_exports.object({ kind: external_exports.literal("pull") }),
-  // A local branch brought up to its upstream, as IntelliJ's Update: fetched first; the branch
-  // checked out takes the upstream in by method once the two have diverged, its uncommitted
-  // changes stashed and put back; any other only fast-forwards. Needs git-update.
-  external_exports.object({ kind: external_exports.literal("update"), ref: Ref, method: external_exports.enum(["merge", "rebase"]).optional() }),
-  // name: the remote branch; left out, the branch's own name, and a branch whose upstream has
-  // another name is refused (as git's push.default=simple). from: the local branch the user saw,
-  // refused once the checkout has moved on (needs git-push-target). The upstream is set only when
-  // the branch has none.
-  // force: --force-with-lease, against the remote branch as last fetched; needs git-force-push.
-  external_exports.object({ kind: external_exports.literal("push"), remote: external_exports.string().optional(), name: Ref.optional(), from: Ref.optional(), force: external_exports.boolean().optional() }),
-  // A local branch set to track a remote one (refs/remotes/…), or to track none; needs git-push-target.
-  external_exports.object({ kind: external_exports.literal("track"), ref: Ref, upstream: Ref.nullable() }),
-  // amend: folds the changes into the commit checked out, its message replaced; needs git-amend.
-  external_exports.object({ kind: external_exports.literal("commit"), message: external_exports.string().trim().min(1).max(1e4), push: external_exports.boolean(), amend: external_exports.boolean().optional() }),
-  external_exports.object({ kind: external_exports.literal("merge"), ref: Ref }),
-  // A commit's change applied onto the current branch as a new commit, or undone by one; a merge
-  // commit by its first parent. Needs git-cherry-pick.
-  external_exports.object({ kind: external_exports.literal("cherryPick"), sha: Ref }),
-  external_exports.object({ kind: external_exports.literal("revert"), sha: Ref }),
-  external_exports.object({ kind: external_exports.literal("rebase"), ref: Ref, from: Ref.optional() }),
-  external_exports.object({ kind: external_exports.literal("resolve"), file: external_exports.string().min(1) }),
-  external_exports.object({ kind: external_exports.literal("continue") }),
-  external_exports.object({ kind: external_exports.literal("abort") })
+
+// packages/protocol/src/conversation-reference.ts
+var Id = external_exports.string().uuid();
+
+// packages/protocol/src/chat-commands.ts
+var ChatCommandFields = external_exports.object({
+  name: external_exports.string().trim().min(1).max(40).regex(/^[a-z0-9][a-z0-9_:-]*$/i),
+  description: external_exports.string().trim().max(200),
+  prompt: external_exports.string().trim().min(1).max(2e4),
+  // Offered only in conversations on this folder; null, in every conversation.
+  projectPath: external_exports.string().min(1).nullable()
+});
+var SavedChatCommand = ChatCommandFields.extend({
+  id: external_exports.string().uuid(),
+  createdAt: external_exports.number(),
+  // When it was pinned above the composer, which orders the pinned ones; null or absent, not pinned.
+  pinnedAt: external_exports.number().nullable().optional()
+});
+
+// packages/protocol/src/project-files.ts
+var ProjectFileMatch = external_exports.object({
+  // Absolute.
+  path: external_exports.string(),
+  // The project folder it was found under, and its path inside it.
+  root: external_exports.string(),
+  relative: external_exports.string(),
+  kind: external_exports.enum(["file", "directory"])
+});
+
+// packages/protocol/src/files.ts
+var MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
+var ResolvedFile = external_exports.object({
+  path: external_exports.string(),
+  root: external_exports.string().nullable(),
+  relative: external_exports.string().nullable(),
+  kind: external_exports.enum(["file", "directory"])
+});
+var FileRead = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("text"), text: external_exports.string(), mtimeMs: external_exports.number().optional() }),
+  external_exports.object({ kind: external_exports.literal("unavailable"), reason: external_exports.enum(["not-found", "is-directory", "binary", "too-large", "unreadable"]) })
 ]);
-var GitResult = external_exports.object({
-  state: external_exports.enum(["done", "conflicts"]),
-  commit: external_exports.string().optional(),
-  branch: external_exports.string().optional(),
-  upstream: external_exports.string().optional(),
-  // From update: how many commits came in, and whether stashed changes went back ('kept' when they
-  // would not apply cleanly and wait in the stash).
-  incoming: external_exports.number().int().optional(),
-  stash: external_exports.enum(["restored", "kept"]).optional()
+var DirectoryEntry = external_exports.object({
+  name: external_exports.string(),
+  path: external_exports.string(),
+  kind: external_exports.enum(["file", "directory", "other"]),
+  symlink: external_exports.boolean()
 });
-var GitOutgoing = external_exports.object({ commits: external_exports.array(GitCommit), total: external_exports.number().int(), isNew: external_exports.boolean() });
+var DirectoryListing = external_exports.object({ entries: external_exports.array(DirectoryEntry), truncated: external_exports.boolean() });
+var FileWrite = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("saved"), mtimeMs: external_exports.number() }),
+  external_exports.object({ kind: external_exports.literal("conflict"), mtimeMs: external_exports.number().nullable() })
+]);
+
+// packages/protocol/src/visualization.ts
+var MAX_VISUALIZATION_BYTES = 5e6;
+var VisualizationFile = external_exports.object({ path: external_exports.string(), contents: external_exports.string().max(MAX_VISUALIZATION_BYTES) });
+var VisualizationReference = external_exports.object({
+  path: external_exports.string().min(1).max(32768),
+  title: external_exports.string().max(200).optional(),
+  mode: external_exports.literal("wide").optional()
+});
+
+// packages/protocol/src/browser.ts
+var BrowserViewport = external_exports.object({ width: external_exports.number().int().min(320).max(3840), height: external_exports.number().int().min(240).max(2160) });
+var BrowserTabId = external_exports.string().uuid();
+var BrowserTab = external_exports.object({
+  id: BrowserTabId,
+  // Whose tab it is: a conversation's, for its agent to drive, or null for one the user opened
+  // themselves in the browser panel, which no agent sees.
+  conversationId: external_exports.string().uuid().nullable(),
+  // A user's tab can be lent to one conversation, and returned without closing its page.
+  userOwned: external_exports.boolean().optional(),
+  debugging: external_exports.boolean().optional(),
+  url: external_exports.string().max(4096),
+  title: external_exports.string().max(500),
+  loading: external_exports.boolean(),
+  // The conversation's tab its tools act on when they name none: the one last used.
+  active: external_exports.boolean(),
+  // The user is acting in the live view; the agent's calls on the tab are refused meanwhile.
+  userDriving: external_exports.boolean().default(false),
+  // One of the agent's calls is under way on the tab.
+  agentActing: external_exports.boolean().default(false),
+  // The size the tab is held at, or null while it follows the panel.
+  viewport: BrowserViewport.nullable().default(null),
+  createdAt: external_exports.number()
+});
+var BrowserDownload = external_exports.object({
+  id: external_exports.string().uuid(),
+  tabId: BrowserTabId,
+  conversationId: external_exports.string().uuid().nullable(),
+  url: external_exports.string(),
+  filename: external_exports.string(),
+  path: external_exports.string(),
+  receivedBytes: external_exports.number().nonnegative(),
+  totalBytes: external_exports.number().nonnegative(),
+  state: external_exports.enum(["progressing", "completed", "cancelled", "interrupted"]),
+  paused: external_exports.boolean(),
+  startedAt: external_exports.number(),
+  finishedAt: external_exports.number().nullable()
+});
+var BrowserDownloadAction = external_exports.enum(["cancel", "open", "reveal"]);
+var MAX_BROWSER_UPLOAD_BYTES = 20 * 1024 * 1024;
+var BrowserStatus = external_exports.object({
+  state: external_exports.enum(["app-closed", "starting", "ready", "error"]),
+  message: external_exports.string().max(2e3).optional(),
+  running: external_exports.boolean()
+});
+var SnapshotRef = external_exports.string().regex(/^(?:f\d+)?e\d+$/);
+var BrowserUploadOptions = external_exports.object({ ref: SnapshotRef, files: external_exports.array(external_exports.string().min(1).max(32768)).min(1).max(10) });
+var BrowserUrl = external_exports.string().trim().min(1).max(4096);
+var BrowserNavigateTo = external_exports.union([
+  external_exports.object({ url: BrowserUrl }),
+  external_exports.object({ history: external_exports.enum(["back", "forward", "reload"]) })
+]);
+var browserActions = {
+  click: external_exports.object({
+    ref: SnapshotRef,
+    button: external_exports.enum(["left", "right", "middle"]).optional(),
+    double: external_exports.boolean().optional(),
+    modifiers: external_exports.array(external_exports.enum(["Alt", "Control", "Meta", "Shift"])).max(4).optional()
+  }),
+  // submit presses Enter after the text; replace clears the field first.
+  type: external_exports.object({ ref: SnapshotRef, text: external_exports.string().max(1e4), submit: external_exports.boolean().optional(), replace: external_exports.boolean().optional() }),
+  press: external_exports.object({ key: external_exports.string().min(1).max(40) }),
+  hover: external_exports.object({ ref: SnapshotRef }),
+  // Scrolls the element under ref, or the page; amount in wheel ticks of roughly a hundred pixels.
+  scroll: external_exports.object({ ref: SnapshotRef.optional(), direction: external_exports.enum(["up", "down", "left", "right"]), amount: external_exports.number().int().min(1).max(20).optional() }),
+  select: external_exports.object({ ref: SnapshotRef, values: external_exports.array(external_exports.string().max(500)).min(1).max(50) }),
+  // Waits for text to appear, for text to go, or for a number of seconds.
+  wait: external_exports.object({ text: external_exports.string().max(500).optional(), textGone: external_exports.string().max(500).optional(), seconds: external_exports.number().min(0).max(30).optional() })
+};
+var BrowserScreenshotOptions = external_exports.object({ fullPage: external_exports.boolean().optional(), ref: SnapshotRef.optional() });
+var BrowserNavigationOutcome = external_exports.enum(["done", "awaiting-host", "denied"]);
+var BrowserNavigation = external_exports.object({ tab: BrowserTab, outcome: BrowserNavigationOutcome, snapshot: external_exports.string().nullable() });
+var BrowserAction = external_exports.object({ tab: BrowserTab, snapshot: external_exports.string() });
+var BrowserSnapshot = external_exports.object({ tab: BrowserTab, snapshot: external_exports.string() });
+var BrowserScreenshot = external_exports.object({ tab: BrowserTab, image: ChatImage });
+var BrowserConsole = external_exports.object({
+  messages: external_exports.array(external_exports.object({ level: external_exports.string().max(20), text: external_exports.string().max(4e3), at: external_exports.number() })),
+  errors: external_exports.array(external_exports.string().max(4e3)),
+  failedRequests: external_exports.array(external_exports.object({ method: external_exports.string().max(10), url: external_exports.string().max(4096), failure: external_exports.string().max(500) })),
+  network: external_exports.array(external_exports.object({
+    id: external_exports.string().max(80),
+    method: external_exports.string().max(20),
+    url: external_exports.string().max(4096),
+    resourceType: external_exports.string().max(50),
+    status: external_exports.number().nullable(),
+    statusText: external_exports.string().max(200),
+    startedAt: external_exports.number(),
+    durationMs: external_exports.number().nullable(),
+    failure: external_exports.string().max(500).nullable()
+  })).optional(),
+  request: external_exports.object({
+    id: external_exports.string().max(80),
+    requestHeaders: external_exports.record(external_exports.string(), external_exports.string()),
+    requestBody: external_exports.string().max(8192).nullable(),
+    responseHeaders: external_exports.record(external_exports.string(), external_exports.string()),
+    responseBody: external_exports.string().max(16384).nullable(),
+    bodyNote: external_exports.enum(["unavailable", "binary", "large", "pending", "truncated"]).nullable()
+  }).optional()
+});
+var BrowserCaptureMode = external_exports.enum(["page", "selection", "element", "region"]);
+var BrowserCaptureOptions = external_exports.object({ mode: BrowserCaptureMode, accent: external_exports.string().max(100).optional() });
+var BrowserPageContext = external_exports.object({
+  url: external_exports.string().max(4096),
+  title: external_exports.string().max(500),
+  text: external_exports.string().max(16e3),
+  selector: external_exports.string().max(2e3).nullable(),
+  html: external_exports.string().max(16e3),
+  styles: external_exports.record(external_exports.string(), external_exports.string()),
+  image: ChatImage.optional()
+});
 
 // packages/protocol/src/plugin-browser.ts
 var SiteId = external_exports.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
@@ -21718,344 +21998,10 @@ function isTimeZone(zone) {
   }
 }
 
-// packages/protocol/src/conversation.ts
-var ConversationRequest = external_exports.object({
-  requestId: external_exports.string(),
-  kind: external_exports.enum(["approval", "question"]).catch("question"),
-  // The approval's tool, as on its chat item; null for a question.
-  tool: external_exports.string().nullable(),
-  title: external_exports.string(),
-  decisions: external_exports.array(ChatDecision.catch("deny")),
-  open: external_exports.number().int().positive(),
-  // A question asked in passing (see the question item's async): nothing waits on it. Older
-  // cores leave it out.
-  async: external_exports.boolean().optional()
-});
-var ConversationDoing = external_exports.object({ tool: external_exports.string().nullable(), title: external_exports.string() });
-var Conversation = external_exports.object({
-  id: external_exports.string().uuid(),
-  title: external_exports.string(),
-  titleLocked: external_exports.boolean(),
-  agent: AgentKind,
-  // The agent's cwd: the first selected project, or the managed directory when no project is selected.
-  workspacePath: external_exports.string(),
-  // Ordered: primary project first, followed by additional directories.
-  projectPaths: external_exports.array(external_exports.string()),
-  // Folders the agent may read but never edit: a task's reference projects. Older cores leave it out.
-  referencePaths: external_exports.array(external_exports.string()).optional(),
-  managedWorkspace: external_exports.boolean(),
-  sessionId: external_exports.string().nullable(),
-  // Includes CLI checks and handshake, before the agent can take a message.
-  starting: external_exports.boolean().optional(),
-  createdAt: external_exports.number(),
-  updatedAt: external_exports.number(),
-  // The newest stage's last reported context, kept after its process exits. Older cores omit it.
-  context: ChatContextUse.nullable().optional(),
-  // How the agent last stopped: code is null when it was stopped rather than exiting on its own.
-  // null before any run has ended. Older cores leave it out.
-  lastExit: external_exports.object({ code: external_exports.number().int().nullable(), at: external_exports.number() }).nullable().optional(),
-  // Set while a chat-mode agent is running, to tell whether it works or waits on the user.
-  // suggestion: what the agent predicts the user will type next, once a turn has ended, until the
-  // next message; only when the user has them on. Older cores leave it out.
-  // request: while the turn waits on the user, the oldest request still open (an approval's
-  // title is its command or path, a question's its first question) and how many are open, so a
-  // list can answer a plain approval without opening the chat; otherwise a question the agent
-  // asked in passing and nobody has answered. Older cores leave it out.
-  chat: external_exports.object({
-    turn: ChatTurnActivity.catch("idle"),
-    suggestion: external_exports.string().nullable().optional(),
-    request: ConversationRequest.nullable().optional(),
-    // While the turn runs. Older cores leave it out.
-    doing: ConversationDoing.nullable().optional(),
-    // Running only on what the agent left in the background, its turn over: the model and effort
-    // change and a message starts a turn, as when idle. Older cores leave it out.
-    betweenTurns: external_exports.boolean().optional()
-  }).nullable().optional(),
-  // What the next chat stage starts with, as chosen or as the last stage left it: the permission
-  // mode, and the model and effort of the conversation's agent. Older cores leave it out.
-  chatOptions: external_exports.object({
-    permissionMode: external_exports.string().nullable(),
-    model: external_exports.string().nullable(),
-    effort: external_exports.string().nullable()
-  }).optional(),
-  // The task this conversation runs, which keeps it out of the free conversations. Older cores leave it out.
-  taskId: external_exports.string().nullable().optional(),
-  // Whether its latest stage may only plan: read-only, the plan kept rather than carried out.
-  planOnly: external_exports.boolean().optional(),
-  // When the user pinned it to the top of the list; null when it is not pinned. Older cores leave it out.
-  pinnedAt: external_exports.number().nullable().optional(),
-  // When the user put it away: out of the list and read-only until taken out again. Older cores
-  // leave it out.
-  archivedAt: external_exports.number().nullable().optional(),
-  // The routine whose run opened it, which keeps it out of the list: it is reached from the
-  // routine's history. Older cores leave it out.
-  routineId: external_exports.string().uuid().nullable().optional(),
-  // The conversation this one was forked from, at some message of it; the source may be gone
-  // since. Older cores leave it out.
-  forkedFromId: external_exports.string().uuid().nullable().optional(),
-  // The group chat it is a member's part of, which keeps it out of the list: it is reached from
-  // the group chat. Older cores leave it out.
-  discussionId: external_exports.string().uuid().nullable().optional(),
-  squadRunId: external_exports.string().uuid().nullable().optional(),
-  profile: AgentProfile.nullable().optional(),
-  parentConversationId: external_exports.string().uuid().nullable().optional(),
-  agentCallId: external_exports.string().uuid().nullable().optional(),
-  delegation: external_exports.object({ open: external_exports.number().int().nonnegative(), awaiting: external_exports.number().int().nonnegative(), writing: external_exports.boolean() }).optional(),
-  helperOf: external_exports.string().uuid().nullable().optional(),
-  workspaceReadOnly: external_exports.boolean().optional(),
-  // The issue it was opened to look into, from the inbox. Older cores leave it out.
-  source: TaskSource.nullable().optional(),
-  autoInvestigationId: external_exports.string().uuid().nullable().optional(),
-  // While core fetches that issue before its agent can start: the issue's text, then its images,
-  // which the agent waits a moment for. error: why the fetch stopped, reason its code; it can be retried
-  // (sources.retryInvestigation). Older cores leave it out, fetching before they answer.
-  preparing: external_exports.object({ step: external_exports.enum(["issue", "images"]).catch("issue"), error: external_exports.string().nullable(), reason: external_exports.string().optional() }).nullable().optional(),
-  // The model provider it was started on, fixed for good; null on the agents' own accounts. route:
-  // what its agent's next stage runs on. Older cores leave both out.
-  modelProvider: ModelProviderId.nullable().optional(),
-  route: ConversationRoute.nullable().optional(),
-  // Opened for someone asking from a chat platform: locked down, kept out of every list, and
-  // spoken in by core alone (docs/CHANNELS.md). Older cores leave it out.
-  channel: ConversationChannel.nullable().optional()
-});
-var ConversationConfiguration = Conversation.pick({ agent: true, projectPaths: true, modelProvider: true }).extend({
-  permissionMode: external_exports.string().nullable(),
-  model: external_exports.string().nullable(),
-  effort: external_exports.string().nullable()
-});
-var ConversationStage = external_exports.object({
-  id: external_exports.string().uuid(),
-  conversationId: external_exports.string().uuid(),
-  agent: AgentKind,
-  providerSessionId: external_exports.string().nullable(),
-  sessionId: external_exports.string().nullable(),
-  receivedSequence: external_exports.number().int().nonnegative(),
-  startedAt: external_exports.number(),
-  endedAt: external_exports.number().nullable(),
-  exitCode: external_exports.number().nullable(),
-  // A stage that may only plan (see Conversation.planOnly).
-  planOnly: external_exports.boolean().optional(),
-  // The model provider it ran on; null on the agent's own account. Older cores leave it out.
-  route: ProviderRoute.nullable().optional(),
-  // The agent account it ran on (AgentAccount.id); null on a provider. Older cores leave it out.
-  account: external_exports.string().nullable().optional()
-});
-var ConversationMessage = external_exports.object({
-  sequence: external_exports.number().int().positive(),
-  conversationId: external_exports.string().uuid(),
-  stageId: external_exports.string().uuid(),
-  role: external_exports.enum(["user", "assistant"]),
-  agent: AgentKind,
-  text: external_exports.string(),
-  eventKey: external_exports.string(),
-  complete: external_exports.boolean(),
-  createdAt: external_exports.number()
-});
-var ConversationSearchHit = external_exports.object({ conversationId: external_exports.string().uuid(), snippet: external_exports.string() });
-var ProjectHead = external_exports.object({
-  path: external_exports.string(),
-  branch: external_exports.string().nullable(),
-  detached: external_exports.boolean(),
-  // The tracked remote branch, null when there is none; ahead and behind count against it.
-  upstream: external_exports.string().nullable().optional(),
-  ahead: external_exports.number().int().nonnegative().optional(),
-  behind: external_exports.number().int().nonnegative().optional(),
-  // Uncommitted entries, untracked files included.
-  changes: external_exports.number().int().nonnegative().optional()
-});
-var CommitPushResult = external_exports.object({
-  commit: external_exports.string(),
-  branch: external_exports.string(),
-  upstream: external_exports.string()
-});
-var CommitResult = external_exports.object({ commit: external_exports.string(), branch: external_exports.string() });
-var PushResult = external_exports.object({ branch: external_exports.string(), upstream: external_exports.string() });
-var BranchHolder = external_exports.object({
-  kind: external_exports.enum(["main", "conversation", "other"]),
-  conversationId: external_exports.string().optional(),
-  title: external_exports.string().optional(),
-  archived: external_exports.boolean().optional(),
-  // The folder is a worktree Antumi laid out, which it can clean (feature archived-worktrees).
-  managed: external_exports.boolean().optional()
-});
-var ProjectBranches = external_exports.object({
-  path: external_exports.string(),
-  git: external_exports.boolean(),
-  // The branch checked out; null when HEAD is detached or there is no git.
-  branch: external_exports.string().nullable(),
-  // Uncommitted changes to tracked files, which keep a switch from happening.
-  changes: external_exports.number().int().nonnegative(),
-  // Local branches, then remote-tracking ones, by full name.
-  refs: external_exports.array(external_exports.string()),
-  // Branches another worktree has checked out, which git will not check out here as well: the
-  // full name, and that worktree's folder.
-  elsewhere: external_exports.record(external_exports.string(), external_exports.string()),
-  // Who each of those is, by the same full name; absent from a core that does not say.
-  holders: external_exports.record(external_exports.string(), BranchHolder).optional(),
-  // Other conversations with an agent open in this folder, by title: a switch moves their files too.
-  sharedWith: external_exports.array(external_exports.string())
-});
-
 // packages/protocol/src/translation.ts
 var TRANSLATE_LANGUAGES = ["zh-CN", "zh-TW", "en", "ja", "ko"];
 var TranslateLanguage = external_exports.enum(TRANSLATE_LANGUAGES);
 var Translation = external_exports.object({ text: external_exports.string(), model: external_exports.string().nullable() });
-
-// packages/protocol/src/terminal.ts
-var Terminal = external_exports.object({
-  id: external_exports.string().uuid(),
-  sessionId: external_exports.string(),
-  cwd: external_exports.string(),
-  title: external_exports.string(),
-  createdAt: external_exports.number(),
-  // A terminal an agent opened to run a command: the conversation it belongs to, the command, and
-  // once the command ends, its exit code; it stays until explicitly closed. User-started CLI
-  // installers have a command without a conversation. Interactive shells have neither.
-  conversationId: external_exports.string().nullable().optional(),
-  command: external_exports.string().nullable().optional(),
-  exited: external_exports.boolean().optional(),
-  exitCode: external_exports.number().int().nullable().optional(),
-  // A project's own command Antumi ran in a worktree (ProjectConfig), not the agent's.
-  purpose: external_exports.enum(["setup", "check"]).nullable().optional()
-});
-var TerminalCommandFields = external_exports.object({
-  // Empty: the command names itself.
-  label: external_exports.string().trim().max(80),
-  command: external_exports.string().trim().min(1).max(4e3),
-  // Off, the command lands on the prompt for the user to finish before pressing Enter.
-  run: external_exports.boolean(),
-  // Offered only in terminals inside this folder or one of its worktrees; null, in every terminal.
-  projectPath: external_exports.string().min(1).nullable()
-});
-var TerminalCommand = TerminalCommandFields.extend({ id: external_exports.string().uuid(), createdAt: external_exports.number() });
-var TerminalOutput = external_exports.object({
-  id: external_exports.string().uuid(),
-  command: external_exports.string(),
-  output: external_exports.string(),
-  // The output was longer than what came back.
-  truncated: external_exports.boolean(),
-  running: external_exports.boolean(),
-  exitCode: external_exports.number().int().nullable()
-});
-var TerminalRun = external_exports.discriminatedUnion("outcome", [
-  external_exports.object({ outcome: external_exports.literal("started"), terminal: Terminal }),
-  external_exports.object({ outcome: external_exports.literal("awaiting") }),
-  external_exports.object({ outcome: external_exports.literal("denied") })
-]);
-
-// packages/protocol/src/project-config.ts
-var ProjectCommand = external_exports.string().trim().min(1).max(4e3);
-var ProjectPullRequestDefaults = external_exports.object({
-  base: external_exports.string().trim().min(1).max(500).optional(),
-  draft: external_exports.boolean().optional()
-});
-var ProjectConfig = external_exports.object({
-  copy: external_exports.array(external_exports.string().trim().min(1).max(500)).max(100).optional(),
-  setup: ProjectCommand.optional(),
-  check: ProjectCommand.optional(),
-  pullRequest: ProjectPullRequestDefaults.optional()
-});
-var ProjectConfigInfo = external_exports.object({
-  path: external_exports.string(),
-  config: ProjectConfig,
-  hash: external_exports.string(),
-  trusted: external_exports.boolean()
-});
-
-// packages/protocol/src/chat-commands.ts
-var ChatCommandFields = external_exports.object({
-  name: external_exports.string().trim().min(1).max(40).regex(/^[a-z0-9][a-z0-9_:-]*$/i),
-  description: external_exports.string().trim().max(200),
-  prompt: external_exports.string().trim().min(1).max(2e4),
-  // Offered only in conversations on this folder; null, in every conversation.
-  projectPath: external_exports.string().min(1).nullable()
-});
-var SavedChatCommand = ChatCommandFields.extend({
-  id: external_exports.string().uuid(),
-  createdAt: external_exports.number(),
-  // When it was pinned above the composer, which orders the pinned ones; null or absent, not pinned.
-  pinnedAt: external_exports.number().nullable().optional()
-});
-
-// packages/protocol/src/project-files.ts
-var ProjectFileMatch = external_exports.object({
-  // Absolute.
-  path: external_exports.string(),
-  // The project folder it was found under, and its path inside it.
-  root: external_exports.string(),
-  relative: external_exports.string(),
-  kind: external_exports.enum(["file", "directory"])
-});
-
-// packages/protocol/src/files.ts
-var MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
-var ResolvedFile = external_exports.object({
-  path: external_exports.string(),
-  root: external_exports.string().nullable(),
-  relative: external_exports.string().nullable(),
-  kind: external_exports.enum(["file", "directory"])
-});
-var FileRead = external_exports.discriminatedUnion("kind", [
-  external_exports.object({ kind: external_exports.literal("text"), text: external_exports.string(), mtimeMs: external_exports.number().optional() }),
-  external_exports.object({ kind: external_exports.literal("unavailable"), reason: external_exports.enum(["not-found", "is-directory", "binary", "too-large", "unreadable"]) })
-]);
-var DirectoryEntry = external_exports.object({
-  name: external_exports.string(),
-  path: external_exports.string(),
-  kind: external_exports.enum(["file", "directory", "other"]),
-  symlink: external_exports.boolean()
-});
-var DirectoryListing = external_exports.object({ entries: external_exports.array(DirectoryEntry), truncated: external_exports.boolean() });
-var FileWrite = external_exports.discriminatedUnion("kind", [
-  external_exports.object({ kind: external_exports.literal("saved"), mtimeMs: external_exports.number() }),
-  external_exports.object({ kind: external_exports.literal("conflict"), mtimeMs: external_exports.number().nullable() })
-]);
-
-// packages/protocol/src/visualization.ts
-var MAX_VISUALIZATION_BYTES = 5e6;
-var VisualizationFile = external_exports.object({ path: external_exports.string(), contents: external_exports.string().max(MAX_VISUALIZATION_BYTES) });
-var VisualizationReference = external_exports.object({
-  path: external_exports.string().min(1).max(32768),
-  title: external_exports.string().max(200).optional(),
-  mode: external_exports.literal("wide").optional()
-});
-
-// packages/protocol/src/worktree.ts
-var ManagedWorktree = external_exports.object({
-  path: external_exports.string(),
-  // The project it belongs to: the repo's main working tree; null when git cannot say.
-  repo: external_exports.string().nullable(),
-  // Null when it has no branch checked out, as a planning checkout has not.
-  branch: external_exports.string().nullable(),
-  // The task it was laid out for, while that task is still there.
-  taskId: external_exports.string().nullable(),
-  // The conversation it was laid out for, while that conversation is still there. Older cores leave it out.
-  conversationId: external_exports.string().nullable().optional(),
-  // That conversation is archived: its worktree can go, and is laid out again from its branch when
-  // the conversation is taken out (feature archived-worktrees). Older cores leave it out.
-  conversationArchived: external_exports.boolean().optional(),
-  // The delegation it was laid out for (feature delegation-worktree): open while the member works.
-  // Its parent conversation may be gone by now.
-  agentCall: external_exports.object({ id: external_exports.string(), parentId: external_exports.string(), open: external_exports.boolean() }).nullable().optional(),
-  planning: external_exports.boolean(),
-  // Uncommitted files, untracked ones included; null when git could not read it.
-  changes: external_exports.number().int().nullable(),
-  // Commits on it that origin's default branch lacks; null when the repo has no such branch.
-  unmerged: external_exports.object({ count: external_exports.number().int(), into: external_exports.string() }).nullable(),
-  // Its task's pull request on the host (feature pull-requests): merged by squash, its commits
-  // still read as unmerged above. Older cores leave it out.
-  pullRequest: external_exports.object({ number: external_exports.number().int(), url: external_exports.string(), state: external_exports.enum(["open", "merged", "closed"]) }).nullable().optional(),
-  // Checked out at a commit no branch or other ref has, which only this worktree still holds.
-  alone: external_exports.boolean(),
-  // Its task's or conversation's agent is open in it: a terminal still running, or a chat mid-turn.
-  inUse: external_exports.boolean().default(false),
-  locked: external_exports.boolean(),
-  // When git last touched it (its index), else when its folder changed.
-  touchedAt: external_exports.number(),
-  // Bytes on disk; null until counted, which happens in the background.
-  size: external_exports.number().nullable()
-});
-var WorktreeCleanResult = external_exports.object({ path: external_exports.string(), removed: external_exports.boolean(), reason: external_exports.string().nullable() });
 
 // packages/protocol/src/awake.ts
 var COMPUTER_AWAKE_MODES = ["on", "auto", "off"];
@@ -22614,42 +22560,6 @@ var AgentPullRequestRun = external_exports.discriminatedUnion("outcome", [
   external_exports.object({ outcome: external_exports.literal("denied") })
 ]);
 
-// packages/protocol/src/bookmarks.ts
-var MAX_BOOKMARKS = 5e3;
-var BookmarkUrl = external_exports.string().trim().max(4096).refine((url2) => /^https?:\/\/[^/\s]/i.test(url2), { message: "not an http(s) URL" });
-var BookmarkFields = external_exports.object({
-  // Empty: the address names it.
-  title: external_exports.string().trim().max(500),
-  url: BookmarkUrl,
-  // Where it sat in the browser it came from ("Bookmarks bar / Work"); null when added here.
-  folder: external_exports.string().trim().min(1).max(500).nullable()
-});
-var Bookmark = BookmarkFields.extend({ id: external_exports.string().uuid(), createdAt: external_exports.number() });
-var BookmarkImport = external_exports.object({ added: external_exports.number().int(), skipped: external_exports.number().int() });
-
-// packages/protocol/src/browser-history.ts
-var MAX_BROWSER_HISTORY_RESULTS = 200;
-var BrowserHistoryEntry = external_exports.object({
-  url: external_exports.string().max(4096),
-  // The conversation whose agent opened it, or null for the user.
-  conversationId: external_exports.string().uuid().nullable(),
-  title: external_exports.string().max(500),
-  visitedAt: external_exports.number(),
-  visits: external_exports.number().int()
-});
-var BrowserHistorySearch = external_exports.object({
-  query: external_exports.string().max(500).default(""),
-  agents: external_exports.boolean().default(false),
-  order: external_exports.enum(["recent", "frequent"]).default("recent"),
-  limit: external_exports.number().int().min(1).max(MAX_BROWSER_HISTORY_RESULTS).default(50)
-});
-
-// packages/protocol/src/browser-sites.ts
-var BrowserSite = external_exports.object({
-  host: external_exports.string().min(1).max(253),
-  allowedAt: external_exports.number()
-});
-
 // packages/protocol/src/mobile.ts
 var MobileAccess = external_exports.enum(["view", "operate"]);
 var MobilePlatform = external_exports.enum(["android", "ios", "web", "other"]).catch("other");
@@ -22777,6 +22687,7 @@ var MobileControl = external_exports.union([
 ]);
 
 // packages/protocol/src/rpc.ts
+var PROTOCOL_VERSION = 18;
 var TaskRef = external_exports.object({ id: external_exports.string().min(1) });
 var TaskTitle = external_exports.string().trim().min(1).max(200);
 var TaskFields = external_exports.object({
@@ -22788,11 +22699,11 @@ var TaskFields = external_exports.object({
   agent: AgentKind.nullable().optional(),
   squadId: external_exports.string().uuid().nullable().optional()
 });
-var SessionRef2 = external_exports.object({ sessionId: external_exports.string().min(1) });
+var SessionRef = external_exports.object({ sessionId: external_exports.string().min(1) });
 var InstanceRef = external_exports.object({ provider: SourceId, instance: SourceId });
 var IssueRef = InstanceRef.extend({ key: external_exports.string().trim().min(1).max(160) });
 var FlowRef = external_exports.object({ flowId: external_exports.string().min(1).max(64) });
-var Ok2 = external_exports.object({ ok: external_exports.literal(true) });
+var Ok = external_exports.object({ ok: external_exports.literal(true) });
 var AccountRef = external_exports.object({ agent: AgentKind, id: AgentAccountId });
 var PullRequestTaskParams = external_exports.object({ taskId: external_exports.string().min(1) });
 var PullRequestRepoParams = PullRequestTaskParams.extend({ repoPath: external_exports.string().min(1) });
@@ -22810,7 +22721,7 @@ var BrowserTabRef = BrowserConversationRef.extend({ tabId: BrowserTabId });
 var rpcMethods = {
   "pets.list": { params: external_exports.object({ refresh: external_exports.boolean().optional() }), result: PetLibraryState },
   "pets.install": { params: external_exports.object({ id: PetId }), result: PetLibraryState },
-  "pets.cancel": { params: external_exports.object({ id: PetId }), result: Ok2 },
+  "pets.cancel": { params: external_exports.object({ id: PetId }), result: Ok },
   "pets.remove": { params: external_exports.object({ id: PetId }), result: PetLibraryState },
   "pets.read": { params: external_exports.object({ id: PetId }), result: PetResourceData },
   "plugins.recommended": { params: external_exports.object({}), result: external_exports.array(RecommendedPlugin) },
@@ -22820,7 +22731,7 @@ var rpcMethods = {
   "plugins.update": { params: external_exports.object({ id: PluginId }), result: PluginInfo },
   "plugins.setEnabled": { params: external_exports.object({ id: PluginId, enabled: external_exports.boolean() }), result: PluginInfo },
   "plugins.rollback": { params: external_exports.object({ id: PluginId, version: PluginVersion }), result: PluginInfo },
-  "plugins.uninstall": { params: external_exports.object({ id: PluginId }), result: Ok2 },
+  "plugins.uninstall": { params: external_exports.object({ id: PluginId }), result: Ok },
   "plugins.pageFiles": { params: external_exports.object({ id: PluginId, page: PluginPageId }), result: PluginPageFiles },
   "plugins.pageCall": { params: external_exports.object({ id: PluginId, page: PluginPageId, method: PluginPageMethod, params: external_exports.unknown() }), result: external_exports.object({ result: external_exports.unknown() }) },
   "agentProfiles.list": { params: external_exports.object({}), result: external_exports.array(AgentProfile) },
@@ -22851,10 +22762,10 @@ var rpcMethods = {
   "squads.retry": { params: external_exports.object({ id: external_exports.string().uuid(), workId: external_exports.string().uuid() }), result: SquadRun },
   "squads.roster": { params: ConversationRef, result: SquadRun.nullable() },
   "squads.dispatch": { params: ConversationRef.extend({ memberId: external_exports.string().uuid(), instruction: SquadWork.shape.instruction, capability: SquadWork.shape.capability, retryOf: external_exports.string().uuid().optional() }), result: SquadWork },
-  "squads.finish": { params: ConversationRef.extend({ summary: external_exports.string().trim().min(1).max(2e4) }), result: Ok2 },
+  "squads.finish": { params: ConversationRef.extend({ summary: external_exports.string().trim().min(1).max(2e4) }), result: Ok },
   "git.openProject": { params: external_exports.object({ path: external_exports.string().min(1) }), result: GitProject },
   "git.status": { params: GitTarget, result: GitStatus },
-  "git.favorite": { params: gitParams({ ref: GitBranch.shape.ref, favorite: external_exports.boolean() }), result: Ok2 },
+  "git.favorite": { params: gitParams({ ref: GitBranch.shape.ref, favorite: external_exports.boolean() }), result: Ok },
   "git.history": { params: gitParams({ ref: external_exports.string(), query: external_exports.string().max(500).default(""), offset: external_exports.number().int().nonnegative().default(0), tips: external_exports.array(external_exports.string()).optional() }), result: GitHistory },
   "git.detail": { params: gitParams({ sha: external_exports.string(), parent: external_exports.string().optional() }), result: GitDetail },
   // The local and remote branches holding a commit, apart from its detail: on a large repository
@@ -22926,12 +22837,12 @@ var rpcMethods = {
   // Moves the pin to the commit the user saw in the check.
   "skills.update": { params: external_exports.object({ id: SkillRepoId, commit: CommitSha, allowUnavailable: external_exports.boolean().optional() }), result: SkillRepo },
   "skills.rollback": { params: external_exports.object({ id: SkillRepoId }), result: SkillRepo },
-  "skills.remove": { params: external_exports.object({ id: SkillRepoId }), result: Ok2 },
+  "skills.remove": { params: external_exports.object({ id: SkillRepoId }), result: Ok },
   "mcpServers.list": { params: external_exports.object({}), result: external_exports.array(McpServer) },
   // Adds a server, or replaces one (previousName), from the next start of each agent it goes to.
   "mcpServers.save": { params: McpServerInput, result: McpServer },
   "mcpServers.setEnabled": { params: external_exports.object({ name: McpServerName, enabled: external_exports.boolean() }), result: McpServer },
-  "mcpServers.remove": { params: external_exports.object({ name: McpServerName }), result: Ok2 },
+  "mcpServers.remove": { params: external_exports.object({ name: McpServerName }), result: Ok },
   // Connects to a saved server as an agent would and lists its tools.
   "mcpServers.probe": { params: external_exports.object({ name: McpServerName }), result: McpProbe },
   // The servers Claude, Codex and Cursor have in their own configuration, and taking some in.
@@ -22943,7 +22854,7 @@ var rpcMethods = {
   "modelProviders.list": { params: external_exports.object({}), result: external_exports.array(ModelProvider) },
   // Adds a provider (id null) or replaces one, from the next start of each agent on it.
   "modelProviders.save": { params: ModelProviderInput, result: ModelProvider },
-  "modelProviders.remove": { params: external_exports.object({ id: ModelProviderId }), result: Ok2 },
+  "modelProviders.remove": { params: external_exports.object({ id: ModelProviderId }), result: Ok },
   // One small request per endpoint and model, as an agent would send it.
   "modelProviders.probe": { params: external_exports.object({ id: ModelProviderId }), result: ModelProviderProbe },
   // The models the endpoints list, before or after the provider is saved.
@@ -22956,7 +22867,7 @@ var rpcMethods = {
   "accounts.login": { params: AccountRef, result: Terminal },
   "accounts.rename": { params: AccountRef.extend({ label: external_exports.string().trim().max(60).nullable() }), result: AgentAccount },
   // Signs it out and drops its folder; the default account stays.
-  "accounts.remove": { params: AccountRef, result: Ok2 },
+  "accounts.remove": { params: AccountRef, result: Ok },
   // The account the agent's next processes start on; those running keep theirs.
   "accounts.activate": { params: AccountRef, result: AgentAccounts },
   "accounts.setAutoSwitch": { params: external_exports.object({ autoSwitch: external_exports.boolean() }), result: AgentAccounts },
@@ -22969,8 +22880,8 @@ var rpcMethods = {
   // A conversation's wire log: one stage's page (the newest stage without stageId), and the stages that have one.
   "debug.wire": { params: ConversationRef.extend({ stageId: external_exports.string().optional(), before: external_exports.number().int().nonnegative().optional() }), result: WirePage },
   // New entries of the conversation's wire log arrive as debug.wireEntries while watched.
-  "debug.watchWire": { params: ConversationRef, result: Ok2 },
-  "debug.unwatchWire": { params: ConversationRef, result: Ok2 },
+  "debug.watchWire": { params: ConversationRef, result: Ok },
+  "debug.unwatchWire": { params: ConversationRef, result: Ok },
   "debug.wireUsage": { params: external_exports.object({}), result: WireUsage },
   // Deletes every wire log; what is left, which a stage still writing may already have added to.
   "debug.clearWire": { params: external_exports.object({}), result: WireUsage },
@@ -23018,7 +22929,7 @@ var rpcMethods = {
   // Gives the task to another agent, which goes on with its chat at once from a handoff (see checkTaskHandoff).
   "tasks.handoff": { params: TaskRef.extend({ agent: AgentKind, note: external_exports.string().max(1e4), allowBypass: AllowBypass }).extend(HandoffOptions.shape), result: Task },
   "tasks.savePlan": { params: TaskRef.extend({ stageId: external_exports.string().uuid(), requestId: external_exports.string().min(1).max(200) }), result: Task },
-  "tasks.delete": { params: TaskRef, result: Ok2 },
+  "tasks.delete": { params: TaskRef, result: Ok },
   // Appended on the server, so uploads that finish together do not overwrite each other.
   "tasks.addImages": { params: TaskRef.extend({ images: external_exports.array(ImageRef).min(1).max(MAX_TASK_IMAGES) }), result: Task },
   "tasks.updateImage": { params: TaskRef.extend({ attachmentId: AttachmentId, name: ImageRef.shape.name }), result: Task },
@@ -23125,36 +23036,36 @@ var rpcMethods = {
       steer: external_exports.boolean().optional(),
       references: external_exports.array(ChatReference).max(1e3).optional()
     }).refine((params) => params.text !== "" || (params.images?.length ?? 0) > 0, { message: "a message needs text or an image" }),
-    result: Ok2
+    result: Ok
   },
   // Drops a waiting message (the ref from state.queue), or every one without a ref.
-  "conversations.cancelQueued": { params: ConversationRef.extend({ ref: external_exports.string().optional() }), result: Ok2 },
+  "conversations.cancelQueued": { params: ConversationRef.extend({ ref: external_exports.string().optional() }), result: Ok },
   // Releases a message a failed turn held (the first without a ref) to go out when the agent is
   // idle; with now, takes it out of the queue and sends it at once, into the running turn if need be.
-  "conversations.sendQueued": { params: ConversationRef.extend({ ref: external_exports.string().optional(), now: external_exports.boolean().optional() }), result: Ok2 },
+  "conversations.sendQueued": { params: ConversationRef.extend({ ref: external_exports.string().optional(), now: external_exports.boolean().optional() }), result: Ok },
   // Whether core continues the chat on its own once the usage limit a usageLimit item reports lifts.
   "conversations.setUsageLimitAutoContinue": {
     params: ConversationRef.extend({ stageId: external_exports.string().uuid(), itemId: external_exports.string().min(1).max(300), autoContinue: external_exports.boolean() }),
-    result: Ok2
+    result: Ok
   },
   // Continues now, the way core would once the limit lifts. Refused while another try is under way.
   "conversations.retryUsageLimit": {
     params: ConversationRef.extend({ stageId: external_exports.string().uuid(), itemId: external_exports.string().min(1).max(300) }),
-    result: Ok2
+    result: Ok
   },
   // Restarts an agent's process after its current turn produced no events or failed, then resends
   // the original user message, only after an explicit click.
   "conversations.retryTurn": {
     params: ConversationRef.extend({ stageId: external_exports.string().uuid(), itemId: external_exports.string().min(1).max(300) }),
-    result: Ok2
+    result: Ok
   },
   // Switches one of the stage's options to a value its state item offers. The
   // conversation remembers it for its next start.
-  "conversations.setOption": { params: ConversationRef.extend({ option: ChatOption, value: external_exports.string().trim().min(1).max(200) }), result: Ok2 },
+  "conversations.setOption": { params: ConversationRef.extend({ option: ChatOption, value: external_exports.string().trim().min(1).max(200) }), result: Ok },
   // Ends the running turn. Cursor's process goes with it; the next message starts another.
-  "conversations.interrupt": { params: ConversationRef, result: Ok2 },
+  "conversations.interrupt": { params: ConversationRef, result: Ok },
   // Stops one piece of background work, apart from the turn: a tool item marked stoppable.
-  "conversations.stopBackground": { params: ConversationRef.extend({ itemId: external_exports.string().min(1).max(200) }), result: Ok2 },
+  "conversations.stopBackground": { params: ConversationRef.extend({ itemId: external_exports.string().min(1).max(200) }), result: Ok },
   // Answers an approval or question item. answers maps a question id to option ids, or labels
   // when the provider supplies none.
   "conversations.respond": {
@@ -23169,20 +23080,20 @@ var rpcMethods = {
       message: external_exports.string().trim().max(2e3).optional(),
       answers: external_exports.record(external_exports.string().max(500), external_exports.array(external_exports.string().max(2e3)).max(20)).optional()
     }),
-    result: Ok2
+    result: Ok
   },
   // The latest page of chat items; this connection then receives conversations.chatItems and
   // conversations.chatDelta for the conversation until it unwatches.
   // limit: the latest that many items of the stage rather than all of it, before then naming the
   // rest; a stage has no cap of its own, which a phone cannot take in one go. Needs mobile.
   "conversations.watchChat": { params: ConversationRef.extend({ limit: ChatPageLimit.optional() }), result: ChatPage },
-  "conversations.unwatchChat": { params: ConversationRef, result: Ok2 },
+  "conversations.unwatchChat": { params: ConversationRef, result: Ok },
   "conversations.chatItems": { params: ConversationRef.extend({ before: external_exports.string().uuid(), limit: ChatPageLimit.optional() }), result: ChatPage },
   "conversations.stop": { params: ConversationRef, result: Conversation },
   // Lets every chat agent with nothing to do go now rather than after its idle wait, as before an
   // app update; the next message starts each again on the same session.
   "conversations.releaseIdle": { params: external_exports.object({}), result: external_exports.object({ released: external_exports.number().int() }) },
-  "conversations.delete": { params: ConversationRef, result: Ok2 },
+  "conversations.delete": { params: ConversationRef, result: Ok },
   "conversations.messages": { params: ConversationRef, result: external_exports.array(ConversationMessage) },
   "conversations.stages": { params: ConversationRef, result: external_exports.array(ConversationStage) },
   // Messages only: clients match titles and projects themselves. Older cores lack it.
@@ -23239,31 +23150,31 @@ var rpcMethods = {
   "browser.console": { params: BrowserTabRef.extend({ sinceNavigation: external_exports.boolean().optional(), requestId: external_exports.string().max(80).optional() }), result: BrowserConsole },
   "browser.upload": { params: BrowserTabRef.extend(BrowserUploadOptions.shape), result: BrowserAction },
   "browser.downloads": { params: external_exports.object({ conversationId: external_exports.string().uuid().optional(), tabId: BrowserTabId.optional() }), result: external_exports.array(BrowserDownload) },
-  "browser.downloadAction": { params: external_exports.object({ id: external_exports.string().uuid(), action: BrowserDownloadAction }), result: Ok2 },
-  "browser.close": { params: BrowserTabRef, result: Ok2 },
+  "browser.downloadAction": { params: external_exports.object({ id: external_exports.string().uuid(), action: BrowserDownloadAction }), result: Ok },
+  "browser.close": { params: BrowserTabRef, result: Ok },
   // The user's side, from the app. status answers from the app's host, connecting when it is not.
   "browser.status": { params: external_exports.object({}), result: BrowserStatus },
   // The conversation's tabs; this connection then receives browser.tabsChanged for it until it
   // unwatches, and may view and drive its tabs meanwhile.
   "browser.watch": { params: BrowserConversationRef, result: external_exports.array(BrowserTab) },
-  "browser.unwatch": { params: BrowserConversationRef, result: Ok2 },
+  "browser.unwatch": { params: BrowserConversationRef, result: Ok },
   // Every tab there is, the user's own included, for the browser panel; then browser.tabsChanged
   // for all of them until unwatchAll.
   "browser.watchAll": { params: external_exports.object({}), result: external_exports.array(BrowserTab) },
-  "browser.unwatchAll": { params: external_exports.object({}), result: Ok2 },
+  "browser.unwatchAll": { params: external_exports.object({}), result: Ok },
   // Navigating a tab from the panel holds the agent's calls on it off for a few seconds; handBack
   // ends that at once. The panel's own size presets go through userViewport.
   "browser.userNavigate": { params: external_exports.object({ tabId: BrowserTabId, to: BrowserNavigateTo }), result: BrowserTab },
   "browser.userViewport": { params: external_exports.object({ tabId: BrowserTabId, viewport: BrowserViewport.nullable() }), result: BrowserTab },
   // For a conversation the connection watches, or, with none, a tab of the user's own.
   "browser.newTab": { params: external_exports.object({ conversationId: external_exports.string().uuid().optional(), url: BrowserUrl.optional() }), result: BrowserTab },
-  "browser.closeTab": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok2 },
-  "browser.handBack": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok2 },
+  "browser.closeTab": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok },
+  "browser.handBack": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok },
   "browser.userScreenshot": { params: external_exports.object({ tabId: BrowserTabId }), result: AttachmentInfo },
   "browser.shareTab": { params: external_exports.object({ tabId: BrowserTabId, conversationId: external_exports.string().uuid().nullable() }), result: BrowserTab },
   "browser.capture": { params: external_exports.object({ tabId: BrowserTabId }).extend(BrowserCaptureOptions.shape), result: BrowserPageContext.nullable() },
-  "browser.cancelCapture": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok2 },
-  "browser.devtools": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok2 },
+  "browser.cancelCapture": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok },
+  "browser.devtools": { params: external_exports.object({ tabId: BrowserTabId }), result: Ok },
   "browser.userConsole": { params: external_exports.object({ tabId: BrowserTabId, requestId: external_exports.string().max(80).optional() }), result: BrowserConsole },
   // An upload in chunks; core checks and stores the image on commit.
   "attachments.begin": {
@@ -23272,7 +23183,7 @@ var rpcMethods = {
   },
   "attachments.append": {
     params: external_exports.object({ uploadId: external_exports.string().min(1).max(64), offset: external_exports.number().int().nonnegative(), data: Base64Chunk }),
-    result: Ok2
+    result: Ok
   },
   "attachments.commit": { params: external_exports.object({ uploadId: external_exports.string().min(1).max(64) }), result: AttachmentInfo },
   // The upload as a text file for the conversation's agent to read, by its path on core's machine.
@@ -23296,11 +23207,11 @@ var rpcMethods = {
   "attachments.sweep": { params: external_exports.object({}), result: external_exports.object({ files: external_exports.number().int(), bytes: external_exports.number() }) },
   // Shells in the app's own terminal panel; their output flows through sessions.*.
   "ports.list": { params: external_exports.object({}), result: PortList },
-  "ports.stop": { params: PortRef, result: Ok2 },
+  "ports.stop": { params: PortRef, result: Ok },
   "terminals.list": { params: external_exports.object({}), result: external_exports.array(Terminal) },
   // colorPrompt: a zsh whose prompt the user never set gets one in colour, with the git branch.
   "terminals.open": { params: external_exports.object({ cwd: external_exports.string().optional(), colorPrompt: external_exports.boolean().optional() }), result: Terminal },
-  "terminals.close": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok2 },
+  "terminals.close": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok },
   // An agent's own terminals, called by Antumi's MCP server for the conversation it serves: run a
   // command in a new tab the user sees, read the end of what it printed, stop it. A conversation
   // reaches only the terminals it opened.
@@ -23313,21 +23224,21 @@ var rpcMethods = {
     result: TerminalOutput
   },
   // close: agent tools stop and remove their tab together; omitted by older clients that keep logs.
-  "terminals.stop": { params: external_exports.object({ conversationId: external_exports.string().uuid(), id: external_exports.string().uuid(), close: external_exports.boolean().optional() }), result: Ok2.extend({ closed: external_exports.boolean().optional() }) },
+  "terminals.stop": { params: external_exports.object({ conversationId: external_exports.string().uuid(), id: external_exports.string().uuid(), close: external_exports.boolean().optional() }), result: Ok.extend({ closed: external_exports.boolean().optional() }) },
   // Commands kept for the terminal panel, oldest first. Saving without an id adds one.
   "terminalCommands.list": { params: external_exports.object({}), result: external_exports.array(TerminalCommand) },
   "terminalCommands.save": { params: TerminalCommandFields.extend({ id: external_exports.string().uuid().optional() }), result: TerminalCommand },
-  "terminalCommands.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok2 },
+  "terminalCommands.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok },
   // Bookmarks for the built-in browser, oldest first, one per address: adding one already kept
   // returns that one. An import skips what is kept already, and what does not fit.
   "bookmarks.list": { params: external_exports.object({}), result: external_exports.array(Bookmark) },
   "bookmarks.add": { params: BookmarkFields, result: Bookmark },
-  "bookmarks.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok2 },
+  "bookmarks.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok },
   "bookmarks.import": { params: external_exports.object({ bookmarks: external_exports.array(BookmarkFields).max(MAX_BOOKMARKS) }), result: BookmarkImport },
   // The pages the browser went to, latest or most visited first. Deleting names a page by its address and who opened it.
   "browserHistory.search": { params: BrowserHistorySearch, result: external_exports.array(BrowserHistoryEntry) },
-  "browserHistory.delete": { params: BrowserHistoryEntry.pick({ url: true, conversationId: true }), result: Ok2 },
-  "browserHistory.clear": { params: external_exports.object({}), result: Ok2 },
+  "browserHistory.delete": { params: BrowserHistoryEntry.pick({ url: true, conversationId: true }), result: Ok },
+  "browserHistory.clear": { params: external_exports.object({}), result: Ok },
   // Sites allowed in every conversation (ALLOW_SITE_ALWAYS), and taking one back. Needs browser-sites.
   "browser.sites": { params: external_exports.object({}), result: external_exports.array(BrowserSite) },
   // The phone link (docs/MOBILE.md): the gateway, pairing and paired devices. Needs mobile.
@@ -23368,24 +23279,24 @@ var rpcMethods = {
   "mobile.setAccess": { params: external_exports.object({ deviceId: external_exports.string().min(1).max(100), access: MobileAccess }), result: MobileStatus },
   // Ends the device's connections at once; what it already sent stays done.
   "mobile.revoke": { params: external_exports.object({ deviceId: external_exports.string().min(1).max(100) }), result: MobileStatus },
-  "browser.forgetSite": { params: BrowserSite.pick({ host: true }), result: Ok2 },
+  "browser.forgetSite": { params: BrowserSite.pick({ host: true }), result: Ok },
   // The user's own chat commands, oldest first. Saving without an id adds one.
   "chatCommands.list": { params: external_exports.object({}), result: external_exports.array(SavedChatCommand) },
   "chatCommands.save": { params: ChatCommandFields.extend({ id: external_exports.string().uuid().optional() }), result: SavedChatCommand },
-  "chatCommands.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok2 },
+  "chatCommands.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok },
   "chatCommands.pin": { params: external_exports.object({ id: external_exports.string().uuid(), pinned: external_exports.boolean() }), result: SavedChatCommand },
   "sessions.attach": {
-    params: SessionRef2.extend({ fromOffset: external_exports.number().int().nonnegative().optional() }),
+    params: SessionRef.extend({ fromOffset: external_exports.number().int().nonnegative().optional() }),
     result: external_exports.object({ buffer: external_exports.string(), bufferStart: external_exports.number().int(), endOffset: external_exports.number().int(), exited: external_exports.boolean() })
   },
-  "sessions.detach": { params: SessionRef2, result: Ok2 },
-  "sessions.write": { params: SessionRef2.extend({ data: external_exports.string() }), result: Ok2 },
+  "sessions.detach": { params: SessionRef, result: Ok },
+  "sessions.write": { params: SessionRef.extend({ data: external_exports.string() }), result: Ok },
   "sessions.resize": {
-    params: SessionRef2.extend({
+    params: SessionRef.extend({
       cols: external_exports.number().int().min(1).max(1e3),
       rows: external_exports.number().int().min(1).max(1e3)
     }),
-    result: Ok2
+    result: Ok
   },
   // Project paths any task or conversation has used, most recent first; kept after they are gone.
   "projects.recent": { params: external_exports.object({}), result: external_exports.array(external_exports.string()) },
@@ -23393,11 +23304,11 @@ var rpcMethods = {
   "worktrees.list": { params: external_exports.object({}), result: external_exports.array(ManagedWorktree) },
   // Removes each worktree checkCleanWorktree allows, as it stands now; branches stay.
   "worktrees.clean": { params: external_exports.object({ paths: external_exports.array(external_exports.string().min(1)).min(1).max(500) }), result: external_exports.array(WorktreeCleanResult) },
-  "projects.forget": { params: external_exports.object({ path: external_exports.string().min(1) }), result: Ok2 },
+  "projects.forget": { params: external_exports.object({ path: external_exports.string().min(1) }), result: Ok },
   // The project's .antumi/project.json as its checkout has it, or null when it has none.
   "projects.config": { params: external_exports.object({ path: external_exports.string().min(1) }), result: ProjectConfigInfo.nullable() },
   // Trusts the commands the user was shown, by their hash; ones changed since are refused again.
-  "projects.trustConfig": { params: external_exports.object({ path: external_exports.string().min(1), hash: external_exports.string().min(1).max(200) }), result: Ok2 },
+  "projects.trustConfig": { params: external_exports.object({ path: external_exports.string().min(1), hash: external_exports.string().min(1).max(200) }), result: Ok },
   // Writes the project's .antumi/project.json as the user filled it in, its commands allowed as
   // written; with nothing in it, the file goes. Answers with what it now holds. Needs project-config-edit.
   "projects.writeConfig": { params: external_exports.object({ path: external_exports.string().min(1), config: ProjectConfig }), result: ProjectConfigInfo.nullable() },
@@ -23418,7 +23329,7 @@ var rpcMethods = {
   },
   // What older clients call projects.recent / projects.forget.
   "repos.recent": { params: external_exports.object({}), result: external_exports.array(external_exports.string()) },
-  "repos.forget": { params: external_exports.object({ path: external_exports.string().min(1) }), result: Ok2 },
+  "repos.forget": { params: external_exports.object({ path: external_exports.string().min(1) }), result: Ok },
   "usage.list": { params: UsageParams, result: external_exports.array(AgentUsage) },
   "usage.history": { params: UsageFilter, result: UsageHistory },
   "usage.scan": { params: external_exports.object({}), result: UsageScanStatus },
@@ -23449,18 +23360,18 @@ var rpcMethods = {
     params: external_exports.object({ id: external_exports.string().uuid(), notBefore: external_exports.number().nullable().optional(), text: external_exports.string().trim().max(1e5).optional() }),
     result: ScheduledRun
   },
-  "schedules.reorder": { params: external_exports.object({ ids: external_exports.array(external_exports.string().uuid()).max(500) }), result: Ok2 },
+  "schedules.reorder": { params: external_exports.object({ ids: external_exports.array(external_exports.string().uuid()).max(500) }), result: Ok },
   "schedules.cancel": { params: external_exports.object({ id: external_exports.string().uuid() }), result: ScheduledRun },
   // Starts it now, without waiting for its time or its agent's quota.
   "schedules.runNow": { params: external_exports.object({ id: external_exports.string().uuid() }), result: ScheduledRun },
-  "schedules.clear": { params: external_exports.object({}), result: Ok2 },
+  "schedules.clear": { params: external_exports.object({}), result: Ok },
   // Routines: rules that open a conversation on a schedule and tell it what to do, unattended.
   // Each occurrence becomes a scheduled run with the routine's id; the list carries only each
   // routine's latest run and how many are unread, runs pages through the rest, newest first.
   "routines.list": { params: external_exports.object({}), result: RoutineList },
   "routines.create": { params: RoutineFields, result: Routine },
   "routines.update": { params: external_exports.object({ id: external_exports.string().uuid() }).merge(RoutineFields.partial()), result: Routine },
-  "routines.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok2 },
+  "routines.delete": { params: external_exports.object({ id: external_exports.string().uuid() }), result: Ok },
   // Starts a run now, without waiting for the schedule or the quota; refused while one is at work.
   "routines.runNow": { params: external_exports.object({ id: external_exports.string().uuid() }), result: ScheduledRun },
   "routines.runs": {
@@ -23468,8 +23379,8 @@ var rpcMethods = {
     result: ScheduledRunList
   },
   // The user looked at a run's result (its conversation), or at all of a routine's.
-  "routines.markSeen": { params: external_exports.object({ runId: external_exports.string().uuid() }), result: Ok2 },
-  "routines.markAllSeen": { params: external_exports.object({ routineId: external_exports.string().uuid() }), result: Ok2 },
+  "routines.markSeen": { params: external_exports.object({ runId: external_exports.string().uuid() }), result: Ok },
+  "routines.markAllSeen": { params: external_exports.object({ routineId: external_exports.string().uuid() }), result: Ok },
   // Group chats, newest activity first. A member's conversation is a conversation of its own, with
   // the group chat's id on it; the chat behind each member's posts is read there.
   "discussions.list": { params: external_exports.object({}), result: DiscussionList },
@@ -23503,7 +23414,7 @@ var rpcMethods = {
   // discussion-archive.
   "discussions.setArchived": { params: DiscussionRef.extend({ archived: external_exports.boolean() }), result: Discussion },
   // Stops its members and deletes it with their conversations; their folders stay.
-  "discussions.delete": { params: DiscussionRef, result: Ok2 },
+  "discussions.delete": { params: DiscussionRef, result: Ok },
   "sources.list": { params: external_exports.object({}), result: external_exports.array(SourceDescriptor) },
   "sources.saveAutoInvestigation": { params: InstanceRef.extend({ config: AutoInvestigationConfig }), result: SourceDescriptor },
   "sources.autoInvestigations": { params: InstanceRef.extend({ cursor: external_exports.string().optional(), limit: external_exports.number().int().min(1).max(100).default(30) }), result: AutoInvestigationPage },
@@ -23520,10 +23431,10 @@ var rpcMethods = {
   // Starts a sign-in flow owned by this connection; prompts arrive as sources.loginPrompt. The
   // client picks the flow id, so it knows it before the first prompt can arrive.
   "sources.login": { params: InstanceRef.extend({ flowId: external_exports.string().uuid() }), result: FlowRef },
-  "sources.answer": { params: FlowRef.extend({ promptId: external_exports.string().min(1).max(64), value: external_exports.string().max(4e3) }), result: Ok2 },
-  "sources.cancelLogin": { params: FlowRef, result: Ok2 },
+  "sources.answer": { params: FlowRef.extend({ promptId: external_exports.string().min(1).max(64), value: external_exports.string().max(4e3) }), result: Ok },
+  "sources.cancelLogin": { params: FlowRef, result: Ok },
   // Forgets the stored credential; settings stay.
-  "sources.disconnect": { params: InstanceRef, result: Ok2 },
+  "sources.disconnect": { params: InstanceRef, result: Ok },
   "sources.updateSummaries": { params: external_exports.object({}), result: external_exports.array(SourceUpdateSummary) },
   "sources.updates": { params: external_exports.object({ target: SourceUpdateTarget, before: external_exports.number().int().positive().optional() }), result: SourceUpdates },
   "sources.refreshUpdates": { params: external_exports.object({ target: SourceUpdateTarget }), result: SourceUpdateSummary },
@@ -23580,10 +23491,10 @@ var rpcMethods = {
   // Every task's, for a client just connected.
   "pullRequests.listAll": { params: external_exports.object({}), result: external_exports.array(PullRequestLink) },
   "pullRequests.refresh": { params: PullRequestTaskParams.extend({ repoPath: external_exports.string().min(1).optional() }), result: external_exports.array(PullRequestLink) },
-  "pullRequests.unlink": { params: PullRequestRepoParams, result: Ok2 },
+  "pullRequests.unlink": { params: PullRequestRepoParams, result: Ok },
   // This client has the task's pull requests on screen, or no longer; core follows those often,
   // and any other still open, now and then.
-  "pullRequests.watch": { params: PullRequestTaskParams.extend({ open: external_exports.boolean() }), result: Ok2 },
+  "pullRequests.watch": { params: PullRequestTaskParams.extend({ open: external_exports.boolean() }), result: Ok },
   // Sends the failed checks or the review comments named into the task's chat for its agent to
   // work on; a task handed in goes back to running, as any message to it does. Refused while the
   // agent is mid-turn (chat-busy).
@@ -23706,6 +23617,418 @@ var CoreEndpoint = external_exports.object({
   // Older cores leave it out, which reads as outdated.
   version: external_exports.string().optional()
 });
+function coreUrl(endpoint) {
+  return `ws://127.0.0.1:${endpoint.port}/?token=${encodeURIComponent(endpoint.token)}`;
+}
+
+// packages/protocol/src/plugin-page.ts
+var MAX_PLUGIN_PAGE_STATE = 32 * 1024;
+var MAX_PLUGIN_PAGE_PARAMS = 64 * 1024;
+var PluginPageTheme = external_exports.object({ scheme: external_exports.enum(["light", "dark"]), variables: external_exports.record(external_exports.string().max(64), external_exports.string().max(500)) });
+var Token = external_exports.object({ antumiPluginPage: external_exports.string() });
+var PluginPageFrameMessage = external_exports.intersection(Token, external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("ready") }),
+  // To the plugin's own backend; answered by a response with the same id.
+  external_exports.object({ kind: external_exports.literal("call"), id: external_exports.number().int(), method: PluginPageMethod, params: external_exports.unknown() }),
+  // A link the user followed, for the app's browser: http and https alone.
+  external_exports.object({ kind: external_exports.literal("open"), url: external_exports.string().max(4096) }),
+  // The little the page keeps between visits; replaces what it kept before.
+  external_exports.object({ kind: external_exports.literal("state"), value: external_exports.unknown() }),
+  // A key chord pressed inside the frame, where the app cannot hear it, so its shortcuts still work.
+  external_exports.object({ kind: external_exports.literal("key"), key: external_exports.string().max(32), code: external_exports.string().max(32), meta: external_exports.boolean(), ctrl: external_exports.boolean(), alt: external_exports.boolean(), shift: external_exports.boolean() }),
+  // Back to the conversations.
+  external_exports.object({ kind: external_exports.literal("leave") })
+]));
+var PluginPageHostMessage = external_exports.intersection(Token, external_exports.discriminatedUnion("kind", [
+  // The answer to ready.
+  external_exports.object({ kind: external_exports.literal("init"), theme: PluginPageTheme, state: external_exports.unknown(), locale: UiLocale }),
+  external_exports.object({ kind: external_exports.literal("theme"), theme: PluginPageTheme }),
+  external_exports.object({ kind: external_exports.literal("response"), id: external_exports.number().int(), result: external_exports.unknown().optional(), error: external_exports.string().max(2e3).optional() })
+]));
+
+// packages/protocol/src/mcp-management.ts
+var MANAGEMENT_TOOLS = {
+  profileList: "antumi_agent_profile_list",
+  profileCreate: "antumi_agent_profile_create",
+  profileUpdate: "antumi_agent_profile_update",
+  squadList: "antumi_squad_list",
+  squadCreate: "antumi_squad_create",
+  squadUpdate: "antumi_squad_update",
+  scheduleList: "antumi_schedule_list",
+  scheduleCreate: "antumi_schedule_create",
+  scheduleUpdate: "antumi_schedule_update",
+  routineList: "antumi_routine_list",
+  routineCreate: "antumi_routine_create",
+  routineUpdate: "antumi_routine_update",
+  skillList: "antumi_skill_list",
+  skillSearch: "antumi_skill_search",
+  skillInstall: "antumi_skill_install",
+  skillSetActivation: "antumi_skill_set_activation",
+  commandList: "antumi_chat_command_list",
+  commandCreate: "antumi_chat_command_create",
+  commandUpdate: "antumi_chat_command_update"
+};
+var MANAGEMENT_READ_TOOLS = [
+  MANAGEMENT_TOOLS.profileList,
+  MANAGEMENT_TOOLS.squadList,
+  MANAGEMENT_TOOLS.scheduleList,
+  MANAGEMENT_TOOLS.routineList,
+  MANAGEMENT_TOOLS.skillList,
+  MANAGEMENT_TOOLS.skillSearch,
+  MANAGEMENT_TOOLS.commandList
+];
+var MANAGEMENT_EDIT_TOOLS = [
+  MANAGEMENT_TOOLS.profileUpdate,
+  MANAGEMENT_TOOLS.squadUpdate,
+  MANAGEMENT_TOOLS.scheduleUpdate,
+  MANAGEMENT_TOOLS.routineUpdate,
+  MANAGEMENT_TOOLS.commandUpdate
+];
+
+// packages/protocol/src/model-provider-presets.ts
+var CHECKED = "2026-10-21";
+var model = (id, contextWindow = null, more = {}) => ({ id, label: null, contextWindow, maxOutput: null, efforts: [], ...more });
+var ARK_MODELS = [
+  model("ark-code-latest"),
+  ...[
+    "doubao-seed-2.1-pro",
+    "doubao-seed-evolving",
+    "doubao-seed-2.1-lite",
+    "doubao-seed-2.0-mini",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "deepseek-v4.1-flash",
+    "minimax-m3",
+    "kimi-k3",
+    "kimi-k2.8-preview"
+  ].map((id) => model(id, null, { reasoningSummaries: true })),
+  model("kimi-k2.7-code", null, { reasoningSummaries: false })
+];
+var ARK_NOTES = [
+  { zh: "\u53EA\u7528\u5957\u9910\u4E13\u5C5E\u5730\u5740\uFF1A\u586B\u6210 /api/v3 \u4E0D\u8D70\u5957\u9910\uFF0C\u4F1A\u53E6\u5916\u6309\u91CF\u8BA1\u8D39\u3002", en: "Use the plan's own address only: /api/v3 bypasses the plan and is billed separately." },
+  { zh: "ark-code-latest \u5B9E\u9645\u7528\u54EA\u4E2A\u6A21\u578B\uFF0C\u5728\u65B9\u821F\u63A7\u5236\u53F0\u91CC\u9009\u3002", en: "Which model ark-code-latest runs is picked in the Ark console." }
+];
+var GLM_MODELS = [
+  model("glm-5.3", 1e6, { reasoningSummaries: true }),
+  model("glm-5.3-flash", 1e6, { reasoningSummaries: true })
+];
+var GLM_NOTES = [
+  { zh: "Coding Plan \u7684 Key \u53EA\u80FD\u7528\u5728\u7F16\u7A0B\u5957\u9910\u5730\u5740\u4E0A\uFF1B\u586B\u6210\u6309\u91CF\u8BA1\u8D39\u7684\u5730\u5740\u4F1A\u63D0\u793A\u4F59\u989D\u4E0D\u8DB3\u3002", en: "A Coding Plan key works only at the plan's addresses; the pay-as-you-go ones report no balance." }
+];
+var MINIMAX_MODELS = [model("MiniMax-M2.7")];
+var TOKEN_PLAN = "https://token-plan.cn-beijing.maas.aliyuncs.com";
+var TOKEN_PLAN_MODELS = [
+  "auto",
+  "qwen3.8-max",
+  "qwen3.8-flash",
+  "qwen3.7-max",
+  "qwen3.7-plus",
+  "qwen3.6-flash",
+  "deepseek-v4.1-flash",
+  "deepseek-v4-pro",
+  "glm-5.3",
+  "glm-5.2"
+].map((id) => model(id));
+var TOKEN_PLAN_NOTES = [
+  { zh: "\u4E2A\u4EBA\u7248\u548C\u56E2\u961F\u7248\u7528\u540C\u4E00\u4E2A\u5730\u5740\uFF1B\u56E2\u961F\u7248\u7684 Key \u5728\u767E\u70BC\u63A7\u5236\u53F0\u7684\u56E2\u961F\u6210\u5458\u9875\u751F\u6210\u3002", en: "Personal and team plans share this address; a team plan's key is made on the team members page of the Model Studio console." },
+  { zh: "\u53EA\u7528 token-plan \u5F00\u5934\u7684\u5730\u5740\uFF1A\u6309\u91CF\u4ED8\u8D39\u7684\u5730\u5740\u4E0D\u6263\u5957\u9910\u989D\u5EA6\uFF0C\u4F1A\u53E6\u5916\u8BA1\u8D39\u3002", en: "Use the token-plan address only: the pay-as-you-go one is billed apart from the plan." }
+];
+var DEEPSEEK_MODELS = [model("deepseek-flash", 1e6), model("deepseek-v4-pro", 1e6)];
+var DEEPSEEK_NOTES = [
+  { zh: "\u6309\u91CF\u8BA1\u8D39\uFF0C\u4E0D\u662F\u5305\u6708\u5957\u9910\uFF1A\u6BCF\u6B21\u8BF7\u6C42\u4ECE\u8D26\u6237\u4F59\u989D\u6263\u8D39\uFF0C\u4F59\u989D\u548C\u7528\u91CF\u5728\u63A7\u5236\u53F0\u770B\u3002", en: "Pay as you go, not a plan: each request is billed to the account balance, shown in the console." },
+  { zh: "deepseek-v4-pro \u4E0D\u5904\u7406\u56FE\u7247\uFF1B\u8054\u7F51\u641C\u7D22\u53E6\u6309\u641C\u7D22\u63A5\u53E3\u8BA1\u8D39\u3002", en: "deepseek-v4-pro takes no images; web search is billed separately as search requests." }
+];
+var MODEL_PROVIDER_PRESETS = {
+  "volcengine-agent-plan": {
+    name: "\u706B\u5C71\u65B9\u821F Agent Plan",
+    translations: { en: { name: "Volcengine Ark Agent Plan" } },
+    anthropic: { baseUrl: "https://ark.cn-beijing.volces.com/api/plan", auth: "auth_token", env: {} },
+    openai: { chatUrl: "https://ark.cn-beijing.volces.com/api/plan/v3", responsesUrl: "https://ark.cn-beijing.volces.com/api/plan/v3" },
+    models: ARK_MODELS,
+    defaultModel: "ark-code-latest",
+    smallModel: "ark-code-latest",
+    agents: ["claude", "codex", "opencode", "pi", "zcode"],
+    keyUrl: "https://ark.volcengine.com/region:cn-beijing/apikey",
+    consoleUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement",
+    docsUrl: "https://docs.volcengine.com/docs/ark/agent-plan-personal-claude-code?lang=zh",
+    checked: CHECKED,
+    verified: null,
+    notes: [{ zh: "\u8981\u7528 Agent Plan \u4E13\u5C5E\u7684 API Key\uFF0C\u65B9\u821F\u7684\u5176\u4ED6 Key \u7528\u4E0D\u4E86\u3002", en: "Needs the Agent Plan's own API key; other Ark keys don't work." }, ...ARK_NOTES]
+  },
+  "volcengine-coding-plan": {
+    name: "\u706B\u5C71\u65B9\u821F Coding Plan",
+    translations: { en: { name: "Volcengine Ark Coding Plan" } },
+    anthropic: { baseUrl: "https://ark.cn-beijing.volces.com/api/coding", auth: "auth_token", env: {} },
+    openai: { chatUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", responsesUrl: "https://ark.cn-beijing.volces.com/api/coding/v3" },
+    models: ARK_MODELS,
+    defaultModel: "ark-code-latest",
+    smallModel: "ark-code-latest",
+    agents: ["claude", "codex", "opencode", "pi", "zcode"],
+    keyUrl: "https://ark.volcengine.com/region:cn-beijing/apikey",
+    consoleUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement",
+    docsUrl: "https://www.volcengine.com/docs/82379/1928261",
+    checked: CHECKED,
+    verified: null,
+    notes: ARK_NOTES
+  },
+  "zhipu-glm-coding": {
+    name: "\u667A\u8C31 GLM Coding Plan",
+    translations: { en: { name: "Zhipu GLM Coding Plan" } },
+    anthropic: { baseUrl: "https://open.bigmodel.cn/api/anthropic", auth: "auth_token", env: { API_TIMEOUT_MS: "3000000" } },
+    openai: { chatUrl: "https://open.bigmodel.cn/api/coding/paas/v4", responsesUrl: "https://open.bigmodel.cn/api/v1" },
+    models: GLM_MODELS,
+    defaultModel: "glm-5.3",
+    smallModel: "glm-5.3-flash",
+    agents: ["claude", "codex", "opencode", "pi", "zcode"],
+    keyUrl: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+    consoleUrl: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+    docsUrl: "https://docs.bigmodel.cn/cn/coding-plan/tool/claude",
+    checked: CHECKED,
+    verified: null,
+    notes: GLM_NOTES
+  },
+  "zai-glm-coding": {
+    name: "Z.ai GLM Coding Plan",
+    translations: { en: { name: "Z.ai GLM Coding Plan" } },
+    anthropic: { baseUrl: "https://api.z.ai/api/anthropic", auth: "auth_token", env: { API_TIMEOUT_MS: "3000000" } },
+    openai: { chatUrl: "https://api.z.ai/api/coding/paas/v4", responsesUrl: "https://api.z.ai/api/v1" },
+    models: GLM_MODELS,
+    defaultModel: "glm-5.3",
+    smallModel: "glm-5.3-flash",
+    agents: ["claude", "codex", "opencode", "pi", "zcode"],
+    keyUrl: "https://z.ai/manage-apikey/apikey-list",
+    consoleUrl: "https://z.ai/manage-apikey/apikey-list",
+    docsUrl: "https://docs.z.ai/devpack/tool/claude",
+    checked: CHECKED,
+    verified: null,
+    notes: GLM_NOTES
+  },
+  "kimi-code": {
+    name: "Kimi Code",
+    translations: { en: { name: "Kimi Code" } },
+    // Its coding endpoint takes the key as x-api-key, and fails tool search.
+    anthropic: { baseUrl: "https://api.kimi.com/coding/", auth: "api_key", env: { ENABLE_TOOL_SEARCH: "false" } },
+    openai: null,
+    models: [model("kimi-for-coding")],
+    defaultModel: "kimi-for-coding",
+    smallModel: "kimi-for-coding",
+    agents: ["claude", "opencode", "pi", "zcode"],
+    keyUrl: "https://www.kimi.com/code/console",
+    consoleUrl: "https://www.kimi.com/code/console",
+    docsUrl: "https://www.kimi.com/code/docs/more/third-party-agents.html",
+    checked: CHECKED,
+    verified: null,
+    notes: []
+  },
+  "minimax-cn": {
+    name: "MiniMax\uFF08\u56FD\u5185\uFF09",
+    translations: { en: { name: "MiniMax (China)" } },
+    anthropic: { baseUrl: "https://api.minimaxi.com/anthropic", auth: "auth_token", env: { API_TIMEOUT_MS: "3000000" } },
+    openai: null,
+    models: MINIMAX_MODELS,
+    defaultModel: "MiniMax-M2.7",
+    smallModel: "MiniMax-M2.7",
+    agents: ["claude", "opencode", "pi", "zcode"],
+    keyUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+    consoleUrl: "https://platform.minimaxi.com/user-center/payment/token-plan",
+    docsUrl: "https://platform.minimaxi.com/docs/token-plan/claude-code",
+    checked: CHECKED,
+    verified: null,
+    notes: []
+  },
+  minimax: {
+    name: "MiniMax\uFF08\u6D77\u5916\uFF09",
+    translations: { en: { name: "MiniMax (Global)" } },
+    anthropic: { baseUrl: "https://api.minimax.io/anthropic", auth: "auth_token", env: { API_TIMEOUT_MS: "3000000" } },
+    openai: null,
+    models: MINIMAX_MODELS,
+    defaultModel: "MiniMax-M2.7",
+    smallModel: "MiniMax-M2.7",
+    agents: ["claude", "opencode", "pi", "zcode"],
+    keyUrl: "https://platform.minimax.io/user-center/basic-information/interface-key",
+    consoleUrl: "https://platform.minimax.io/user-center/payment/token-plan",
+    docsUrl: "https://platform.minimax.io/docs/token-plan/opencode",
+    checked: CHECKED,
+    verified: null,
+    notes: []
+  },
+  "bailian-token-plan": {
+    name: "\u963F\u91CC\u4E91\u767E\u70BC Token Plan",
+    translations: { en: { name: "Alibaba Cloud Model Studio Token Plan" } },
+    anthropic: { baseUrl: `${TOKEN_PLAN}/apps/anthropic`, auth: "auth_token", env: {} },
+    openai: { chatUrl: `${TOKEN_PLAN}/compatible-mode/v1`, responsesUrl: `${TOKEN_PLAN}/compatible-mode/v1` },
+    models: TOKEN_PLAN_MODELS,
+    defaultModel: "qwen3.8-max",
+    smallModel: "qwen3.6-flash",
+    agents: ["claude", "codex", "opencode", "pi", "zcode"],
+    keyUrl: "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal",
+    consoleUrl: "https://bailian.console.aliyun.com/cn-beijing/subscription/overview",
+    docsUrl: "https://help.aliyun.com/zh/model-studio/token-plan-personal-overview",
+    checked: "2026-10-22",
+    verified: null,
+    notes: TOKEN_PLAN_NOTES
+  },
+  deepseek: {
+    name: "DeepSeek\uFF08\u6309\u91CF\u8BA1\u8D39\uFF09",
+    translations: { en: { name: "DeepSeek (pay as you go)" } },
+    anthropic: { baseUrl: "https://api.deepseek.com/anthropic", auth: "auth_token", env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "786432" } },
+    openai: { chatUrl: "https://api.deepseek.com", responsesUrl: "https://api.deepseek.com" },
+    models: DEEPSEEK_MODELS,
+    defaultModel: "deepseek-flash",
+    smallModel: "deepseek-flash",
+    agents: ["claude", "codex", "opencode", "pi", "zcode"],
+    keyUrl: "https://platform.deepseek.com/api_keys",
+    consoleUrl: "https://platform.deepseek.com/usage",
+    docsUrl: "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code",
+    checked: "2026-11-03",
+    verified: null,
+    notes: DEEPSEEK_NOTES
+  }
+};
+
+// packages/protocol/src/agents/dsh-runtime.ts
+var DSH_MODES = ["ask", "acceptEdits", "plan", "readOnly", "bypass"];
+var DshMode = external_exports.enum(DSH_MODES);
+var DshRuntimeConfig = external_exports.object({
+  mode: DshMode.default("ask"),
+  lock: external_exports.enum(["plan", "readOnly"]).nullable().default(null),
+  allowBypass: external_exports.boolean().default(false),
+  workDirs: external_exports.array(external_exports.string()).default([]),
+  noEdit: external_exports.array(external_exports.string()).default([]),
+  readTools: external_exports.array(external_exports.string()).default([]),
+  skills: external_exports.array(external_exports.string()).default([]),
+  initialModel: external_exports.object({ provider: external_exports.string(), model: external_exports.string() }).optional()
+});
+
+// packages/protocol/src/channel-platforms.ts
+var SLACK_MANIFEST = JSON.stringify({
+  display_information: { name: "Antumi" },
+  features: {
+    bot_user: { display_name: "Antumi", always_online: false },
+    app_home: { messages_tab_enabled: true, messages_tab_read_only_enabled: false }
+  },
+  oauth_config: { scopes: { bot: ["app_mentions:read", "chat:write", "reactions:write", "im:history", "files:read"] } },
+  settings: {
+    event_subscriptions: { bot_events: ["app_mention", "message.im"] },
+    interactivity: { is_enabled: false },
+    org_deploy_enabled: false,
+    socket_mode_enabled: true,
+    token_rotation_enabled: false
+  }
+}, null, 2);
+var FEISHU_SCOPES = JSON.stringify({
+  scopes: {
+    tenant: ["im:message.group_at_msg:readonly", "im:message.p2p_msg:readonly", "im:message:send_as_bot", "im:message.reactions:write_only", "im:message:readonly", "tenant:tenant:readonly"],
+    user: []
+  }
+}, null, 2);
+
+// packages/protocol/src/delegation-delivery.ts
+var Delivered = external_exports.object({
+  callId: external_exports.string(),
+  name: external_exports.string(),
+  state: external_exports.string(),
+  result: external_exports.string().nullish(),
+  error: external_exports.string().nullish()
+});
+var Delivery = external_exports.union([Delivered.transform((one) => [one]), external_exports.array(Delivered)]);
+
+// packages/protocol/src/node/daemon-protocol.ts
+var SessionRef2 = external_exports.object({ sessionId: external_exports.string() });
+var Ok2 = external_exports.object({ ok: external_exports.literal(true) });
+var ProcessSnapshotData = external_exports.object({
+  processes: external_exports.array(external_exports.object({ pid: external_exports.number().int(), parentPid: external_exports.number().int(), startedAt: external_exports.string(), command: external_exports.string() })),
+  listeners: external_exports.array(external_exports.object({ pid: external_exports.number().int(), address: external_exports.string(), port: external_exports.number().int() }))
+});
+var AwakeBackendStatus = external_exports.object({
+  active: external_exports.boolean(),
+  supported: external_exports.boolean(),
+  problem: external_exports.string().nullable()
+});
+var SessionIo = external_exports.enum(["pty", "pipe"]);
+var SessionInfo = external_exports.object({
+  sessionId: external_exports.string(),
+  exited: external_exports.boolean(),
+  exitCode: external_exports.number().nullable(),
+  // Older daemons host PTYs only and leave it out.
+  io: SessionIo.optional(),
+  agent: AgentKind.optional(),
+  upgradeId: external_exports.string().uuid().optional(),
+  stopReason: external_exports.enum(["cancelled", "timed-out"]).optional(),
+  // A pipe's PROCESS_OWNER_ENV as it was started; older daemons leave it out.
+  owner: external_exports.string().optional()
+});
+var Launch = external_exports.object({
+  agent: AgentKind.optional(),
+  command: external_exports.string(),
+  args: external_exports.array(external_exports.string()),
+  cwd: external_exports.string(),
+  env: external_exports.record(external_exports.string(), external_exports.string())
+});
+var daemonMethods = {
+  portsList: { params: external_exports.object({}), result: external_exports.array(HostedPort) },
+  portsStop: { params: PortRef, result: Ok2 },
+  spawnCliUpgrade: {
+    params: Launch.extend({ agent: AgentKind, upgradeId: external_exports.string().uuid(), cols: external_exports.number().int().min(1), rows: external_exports.number().int().min(1) }),
+    result: SessionRef2
+  },
+  spawn: {
+    params: Launch.extend({ cols: external_exports.number().int().min(1), rows: external_exports.number().int().min(1) }),
+    result: SessionRef2
+  },
+  // A method of its own rather than a flag on spawn: an older daemon would drop the flag and
+  // start a PTY, where this one fails with unknown-method.
+  spawnPipe: { params: Launch, result: SessionRef2 },
+  // As spawnPipe, but with none of the daemon's own environment beyond what a process needs to run
+  // at all (CLEAN_ENV_KEYS): for an agent answering someone who is not the user. A method of its
+  // own for the same reason: an older daemon must fail rather than pass everything on.
+  spawnPipeClean: { params: Launch, result: SessionRef2 },
+  write: { params: SessionRef2.extend({ data: external_exports.string() }), result: Ok2 },
+  resize: {
+    params: SessionRef2.extend({ cols: external_exports.number().int().min(1), rows: external_exports.number().int().min(1) }),
+    result: Ok2
+  },
+  // force skips the polite signal, for a process that ignored it.
+  kill: { params: SessionRef2.extend({ force: external_exports.boolean().optional() }), result: Ok2 },
+  attach: {
+    params: SessionRef2,
+    result: SessionInfo.extend({
+      buffer: external_exports.string(),
+      bufferStart: external_exports.number().int(),
+      endOffset: external_exports.number().int(),
+      // A pipe session's recent stderr: what a CLI says when it fails before its first JSON line.
+      stderr: external_exports.string().optional()
+    })
+  },
+  list: { params: external_exports.object({}), result: external_exports.object({ sessions: external_exports.array(SessionInfo) }) },
+  // Forgets an exited session and its buffered output, once core has kept what it needs.
+  release: { params: SessionRef2, result: Ok2 },
+  // A lease makes a lost core release the assertion without relying on cleanup running.
+  awakeSet: {
+    params: external_exports.object({ active: external_exports.boolean(), leaseMs: external_exports.number().int().min(1e4).max(3e5) }),
+    result: AwakeBackendStatus
+  },
+  awakeStatus: { params: external_exports.object({}), result: AwakeBackendStatus },
+  // The daemon's own build, for an app updated in place to tell an old one from its own.
+  info: { params: external_exports.object({}), result: external_exports.object({ version: external_exports.string(), pid: external_exports.number().int(), features: external_exports.array(external_exports.string()).optional() }) },
+  // Leaves, but only when nothing it hosts still runs (a browser host aside, which core starts
+  // again when it needs one): an app updated in place replaces it then. live: what kept it.
+  // blockers: the sessions still alive when it refuses; older daemons give only the count.
+  retire: { params: external_exports.object({}), result: external_exports.object({ retired: external_exports.boolean(), live: external_exports.number().int(), blockers: external_exports.array(external_exports.object({ sessionId: external_exports.string(), agent: AgentKind.optional() })).optional() }) }
+};
+var DaemonRequest = external_exports.object({ id: external_exports.number(), method: external_exports.string(), params: external_exports.unknown() });
+var DaemonEvent = external_exports.discriminatedUnion("event", [
+  external_exports.object({ event: external_exports.literal("data"), sessionId: external_exports.string(), data: external_exports.string(), offset: external_exports.number().int() }),
+  external_exports.object({ event: external_exports.literal("stderr"), sessionId: external_exports.string(), data: external_exports.string() }),
+  external_exports.object({ event: external_exports.literal("exit"), sessionId: external_exports.string(), exitCode: external_exports.number() })
+]);
+var DaemonInbound = external_exports.union([
+  DaemonEvent,
+  external_exports.object({ id: external_exports.number(), error: external_exports.string() }),
+  external_exports.object({ id: external_exports.number(), result: external_exports.unknown() })
+]);
 
 // packages/protocol/src/node/browser-host-protocol.ts
 var BrowserHostEndpoint = external_exports.object({
@@ -24112,6 +24435,12 @@ function sentinelPort(text) {
   throw new Error("tunnel: sentinel port is not a port");
 }
 
+// packages/protocol/src/node/backend-lifecycle.ts
+var DaemonReply = external_exports.object({ id: external_exports.unknown(), result: external_exports.record(external_exports.string(), external_exports.unknown()).optional() });
+
+// packages/desktop/src/main/wsl/wsl-backend.ts
+import { readFile } from "node:fs/promises";
+
 // packages/desktop/src/main/wsl/wsl-command.ts
 import { spawn } from "node:child_process";
 import { statSync as statSync2 } from "node:fs";
@@ -24235,8 +24564,8 @@ function parseRunningDistros(text) {
 }
 function failure2(result) {
   if (result.timedOut) return { status: "unknown", reason: "timeout" };
-  const said = result.stderr.trim() || result.stdout.trim();
-  return { status: "unknown", reason: `exit ${String(result.code)}${said ? `: ${said}` : ""}` };
+  const said2 = result.stderr.trim() || result.stdout.trim();
+  return { status: "unknown", reason: `exit ${String(result.code)}${said2 ? `: ${said2}` : ""}` };
 }
 async function list(args, host) {
   if (!wslExecutable(host)) return { status: "unavailable" };
@@ -24309,6 +24638,130 @@ async function findLinuxExecutable(distro2, name, path2, options = {}) {
   return result.code !== null && NOT_FOUND_CODES.has(result.code) && !found ? { status: "missing" } : { status: "unknown" };
 }
 
+// packages/desktop/src/main/wsl/wsl-backend.ts
+var MIN_NODE = [22, 13];
+var START_WAIT_MS = 3e4;
+var INSTALL_TIMEOUT_MS = 12e4;
+var CONTROL_TIMEOUT_MS = 3e4;
+function nodeIsNewEnough(version2) {
+  const match = /^v?(\d+)\.(\d+)\./.exec(version2.trim());
+  if (!match?.[1] || !match[2]) return false;
+  const major = Number(match[1]);
+  return major > MIN_NODE[0] || major === MIN_NODE[0] && Number(match[2]) >= MIN_NODE[1];
+}
+var said = (result) => (result.stderr.trim() || result.stdout.trim() || `exit ${String(result.code)}`).slice(-600);
+var INSTALL_SCRIPT = [
+  "set -e",
+  "umask 077",
+  'root="$HOME/.antumi/backend"',
+  'dir="$root/$1"',
+  'tmp="$root/.$1.$$"',
+  'mkdir -p "$root"',
+  // What an install that was cut short left behind.
+  'rm -rf "$root/.$1".*',
+  'cat > "$tmp.tar.gz"',
+  'echo "$2  $tmp.tar.gz" | sha256sum -c - > /dev/null',
+  'mkdir "$tmp"',
+  'tar -xzf "$tmp.tar.gz" -C "$tmp"',
+  'rm -f "$tmp.tar.gz"',
+  ': > "$tmp/.ready"',
+  'rm -rf "$dir"',
+  'mv "$tmp" "$dir"'
+].join("\n");
+var LAUNCH_SCRIPT = [
+  'logs="$HOME/.antumi/logs"',
+  'mkdir -p -m 700 "$logs"',
+  'cd "$HOME"',
+  "name=$1",
+  "shift",
+  'exec "$@" >> "$logs/$name.log" 2>&1'
+].join("\n");
+var Started = external_exports.object({ start: external_exports.array(external_exports.enum(["daemon", "core"])) });
+var Endpoint = external_exports.object({ endpoint: CoreEndpoint.nullable() });
+var Check = external_exports.object({ node: external_exports.string(), arch: external_exports.string(), pty: external_exports.union([external_exports.literal(true), external_exports.string()]) });
+async function control(place, schema, command, host) {
+  const result = await runInDistro(place.distro, [place.node, `${place.dir}/backend-control.mjs`, ...command], { host, env: { PATH: place.path }, timeoutMs: CONTROL_TIMEOUT_MS });
+  const line = result.stdout.trim().split("\n").at(-1) ?? "";
+  let parsed = null;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return { answer: null, result };
+  }
+  const answer = schema.safeParse(parsed);
+  return { answer: answer.success ? answer.data : null, result };
+}
+async function findWslBackendPlace(distro2, folder, host = nodeWslHost) {
+  const problem = (found) => ({ ok: false, problem: found });
+  const listed = await listDistros(host);
+  if (listed.status === "unavailable") return problem({ kind: "wsl-unavailable" });
+  if (listed.status === "unknown") return problem({ kind: "wsl-unknown", detail: listed.reason });
+  const entry = listed.distros.find((each) => each.name.toLowerCase() === distro2.toLowerCase());
+  if (!entry) return problem({ kind: "distro-missing", distro: distro2 });
+  if (entry.version !== 2) return problem({ kind: "distro-wsl1", distro: entry.name });
+  const arch = (await runInDistro(entry.name, ["/bin/uname", "-m"], { host })).stdout.trim();
+  if (arch !== "x86_64") return problem(arch ? { kind: "arch", arch } : { kind: "wsl-unknown", detail: "uname gave no answer" });
+  const login = await loginEnvironment(entry.name, { host });
+  if (!login) return problem({ kind: "login-environment" });
+  const node2 = await findLinuxExecutable(entry.name, "node", login.path, { host });
+  if (node2.status === "missing") return problem({ kind: "node-missing" });
+  if (node2.status === "unknown") return problem({ kind: "wsl-unknown", detail: "could not look for node" });
+  const version2 = (await runInDistro(entry.name, [node2.path, "--version"], { host })).stdout.trim();
+  if (!nodeIsNewEnough(version2)) return problem({ kind: "node-old", version: version2, path: node2.path });
+  return { ok: true, place: { distro: entry.name, node: node2.path, dir: `${login.home}/.antumi/backend/${folder}`, home: login.home, path: login.path } };
+}
+var backendFolder = (version2, archive) => `${version2}-${archive.sha256.slice(0, 12)}`;
+async function install(place, folder, archive, host) {
+  const ready = await runInDistro(place.distro, ["/bin/sh", "-c", 'test -f "$1"', "sh", `${place.dir}/.ready`], { host });
+  if (ready.code === 0) return null;
+  if (ready.code !== 1) return { kind: "install", detail: said(ready) };
+  let bytes;
+  try {
+    bytes = await readFile(archive.file);
+  } catch (error62) {
+    return { kind: "install", detail: String(error62) };
+  }
+  const done = await runInDistro(place.distro, ["/bin/sh", "-c", INSTALL_SCRIPT, "sh", folder, archive.sha256], { host, input: bytes, timeoutMs: INSTALL_TIMEOUT_MS });
+  return done.code === 0 ? null : { kind: "install", detail: done.timedOut ? "timed out" : said(done) };
+}
+function launchInWsl(place, name, host = nodeWslHost) {
+  spawnInDistro(place.distro, ["/bin/sh", "-c", LAUNCH_SCRIPT, "sh", name, place.node, `${place.dir}/${name}.mjs`], {
+    host,
+    detached: true,
+    env: { PATH: place.path, ANTUMI_MCP_JS: `${place.dir}/mcp.mjs` }
+  }).unref();
+}
+async function wslCoreEndpoint(place, host = nodeWslHost) {
+  return (await control(place, Endpoint, ["endpoint"], host)).answer?.endpoint ?? null;
+}
+async function replaceOldWslDaemon(place, version2, host = nodeWslHost) {
+  const { answer } = await control(place, Started, ["replace-daemon", version2], host);
+  for (const name of answer?.start ?? []) launchInWsl(place, name, host);
+}
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function ensureWslBackend(options) {
+  const host = options.host ?? nodeWslHost;
+  const folder = backendFolder(options.version, options.archive);
+  const found = await findWslBackendPlace(options.distro, folder, host);
+  if (!found.ok) return found;
+  const { place } = found;
+  const failed2 = await install(place, folder, options.archive, host);
+  if (failed2) return { ok: false, problem: failed2 };
+  const check2 = await control(place, Check, ["check"], host);
+  if (!check2.answer) return { ok: false, problem: { kind: "start", detail: said(check2.result) } };
+  if (check2.answer.pty !== true) return { ok: false, problem: { kind: "pty", detail: check2.answer.pty } };
+  const prepared = await control(place, Started, ["prepare", options.version], host);
+  if (!prepared.answer) return { ok: false, problem: { kind: "start", detail: said(prepared.result) } };
+  for (const name of prepared.answer.start) launchInWsl(place, name, host);
+  const until = Date.now() + (options.startWaitMs ?? START_WAIT_MS);
+  for (; ; ) {
+    const endpoint = await wslCoreEndpoint(place, host);
+    if (endpoint) return { ok: true, place, endpoint };
+    if (Date.now() >= until) return { ok: false, problem: { kind: "start", detail: `core did not come up; see ${place.home}/.antumi/logs/core.log in ${place.distro}` } };
+    await sleep(500);
+  }
+}
+
 // packages/desktop/src/main/wsl/wsl-smoke.ts
 var distro = process.argv[2] ?? "";
 var mutate = process.argv.includes("--mutate");
@@ -24321,13 +24774,13 @@ function report(name, ok, detail = "") {
 }
 var note = (name, value) => console.log(`NOTE  ${name}  ${typeof value === "string" ? value : JSON.stringify(value)}`);
 var sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function launchProgram(seconds) {
   return ["/bin/sh", "-c", 'log="$HOME/.antumi-smoke/launch-$1.log"; mkdir -p "${log%/*}"; echo "started $HOME" >> "$log"; exec sleep "$1" >> "$log" 2>&1', "sh", String(seconds)];
 }
 async function launch() {
   spawnInDistro(distro, launchProgram(901), { detached: true }).unref();
-  await sleep(3e3);
+  await sleep2(3e3);
   report("launched", (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 901"])).code === 0);
 }
 async function checkLaunch() {
@@ -24340,6 +24793,9 @@ async function checkLaunch() {
 async function main() {
   if (process.argv.includes("--launch")) return launch();
   if (process.argv.includes("--check-launch")) return checkLaunch();
+  const backendFlag = process.argv.indexOf("--backend");
+  if (backendFlag !== -1) return backend(process.argv[backendFlag + 1] ?? "");
+  if (process.argv.includes("--check-backend")) return checkBackend();
   const exe = wslExecutable();
   report("wsl.exe found", exe !== null, exe ?? "");
   if (!exe || !distro) throw new Error("usage: node wsl-smoke.mjs <distro> [--mutate]");
@@ -24369,7 +24825,7 @@ v a"l $x
   const began = Date.now();
   const slow = await runInDistro(distro, ["/bin/sleep", "31"], { timeoutMs: 1500 });
   report("timeout resolves promptly", slow.timedOut && Date.now() - began < 5e3, `${Date.now() - began}ms`);
-  await sleep(2e3);
+  await sleep2(2e3);
   note("sleep left behind after the kill", (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 31"])).stdout.trim() || "none");
   report("finds sh", (await findLinuxExecutable(distro, "sh", "/usr/local/bin:/usr/bin:/bin")).status === "found");
   report("a missing program is missing", (await findLinuxExecutable(distro, "antumi-no-such-program", "/usr/bin:/bin")).status === "missing");
@@ -24397,19 +24853,86 @@ v a"l $x
   report("piped child is binary-clean for 2MB", sha(Buffer.concat(back)) === sha(binary), `${Buffer.concat(back).length} bytes back`);
   note("HOME under --exec", (await runInDistro(distro, ["/usr/bin/printenv", "HOME"])).stdout.trim());
   spawnInDistro(distro, launchProgram(47), { detached: true }).unref();
-  await sleep(2500);
-  const said = (await runInDistro(distro, ["/bin/sh", "-c", 'cat "$HOME/.antumi-smoke/launch-47.log"'])).stdout;
-  report("detached launch runs and logs in the distro", said.includes("started /") && (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 47"])).code === 0, JSON.stringify(said));
+  await sleep2(2500);
+  const said2 = (await runInDistro(distro, ["/bin/sh", "-c", 'cat "$HOME/.antumi-smoke/launch-47.log"'])).stdout;
+  report("detached launch runs and logs in the distro", said2.includes("started /") && (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 47"])).code === 0, JSON.stringify(said2));
   await runInDistro(distro, ["/usr/bin/pkill", "-f", "sleep 47"]);
   if (tunnelFile) await tunnel(tunnelFile);
   const terminated = await runWsl(["--terminate", distro]);
   note("terminate", terminated);
-  await sleep(1500);
+  await sleep2(1500);
   const first = await isDistroRunning(distro);
-  await sleep(3e3);
+  await sleep2(3e3);
   const second = await isDistroRunning(distro);
   report("a stopped distro reads as stopped, and asking does not start it", first === "stopped" && second === "stopped", `${first}, ${second}`);
   note("running list when nothing runs", await runWsl(["--list", "--running", "--quiet"]));
+}
+function rpc(endpoint, method, params) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(coreUrl(endpoint));
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error(`${method} timed out`));
+    }, 3e4);
+    socket.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error(`${method}: no connection on port ${String(endpoint.port)}`));
+    };
+    socket.onopen = () => socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
+    socket.onmessage = (event) => {
+      const message = JSON.parse(String(event.data));
+      if (typeof message !== "object" || message === null || !("id" in message) || message.id !== 1) return;
+      clearTimeout(timer);
+      socket.close();
+      if ("error" in message) reject(new Error(`${method}: ${JSON.stringify(message.error)}`));
+      else resolve("result" in message ? message.result : null);
+    };
+  });
+}
+var placeFile = join(tmpdir(), "antumi-wsl-smoke-place.json");
+async function backend(folder) {
+  const manifest = JSON.parse(readFileSync2(join(folder, "backend-linux-x64.json"), "utf8"));
+  if (typeof manifest !== "object" || manifest === null || !("sha256" in manifest) || typeof manifest.sha256 !== "string" || !("version" in manifest) || typeof manifest.version !== "string") throw new Error("no manifest");
+  const options = { distro, version: manifest.version, archive: { file: join(folder, "backend-linux-x64.tar.gz"), sha256: manifest.sha256 } };
+  note("manifest", manifest);
+  const began = Date.now();
+  const started = await ensureWslBackend(options);
+  report("backend installed and started", started.ok, `${Date.now() - began}ms ${JSON.stringify(started.ok ? { place: { ...started.place, path: "\u2026" }, endpoint: { ...started.endpoint, token: "\u2026" } } : started.problem)}`);
+  const logs = async (name) => note(`${name}.log`, (await runInDistro(distro, ["/bin/sh", "-c", 'tail -n 15 "$HOME/.antumi/logs/$1.log"', "sh", name])).stdout);
+  if (!started.ok) {
+    await logs("daemon");
+    await logs("core");
+    return;
+  }
+  const { place, endpoint } = started;
+  writeFileSync(placeFile, JSON.stringify({ place, pid: endpoint.pid }));
+  note("installed", (await runInDistro(distro, ["/bin/ls", "-la", place.dir])).stdout);
+  const hello = await rpc(endpoint, "system.hello", { protocolVersion: PROTOCOL_VERSION }).catch((error62) => String(error62));
+  report("core answers Windows on 127.0.0.1", typeof hello === "object", JSON.stringify(hello));
+  const environment = await rpc(endpoint, "system.environment", { refresh: true }).catch((error62) => String(error62));
+  report("core reads its environment in the distro", typeof environment === "object", JSON.stringify(environment).slice(0, 1200));
+  const againBegan = Date.now();
+  const again = await ensureWslBackend(options);
+  report("a second start finds the same core", again.ok && again.endpoint.pid === endpoint.pid, `${Date.now() - againBegan}ms`);
+  await replaceOldWslDaemon(place, options.version);
+  report("the daemon of this build is left alone", (await wslCoreEndpoint(place))?.pid === endpoint.pid);
+  note("backend processes", (await runInDistro(distro, ["/bin/sh", "-c", 'ps -eo pid,ppid,etimes,args | grep -E "antumi|node" | grep -v grep'])).stdout);
+  const helper = spawnInDistro(distro, [place.node, `${place.dir}/wsl-tunnel.mjs`]);
+  if (!helper.stdout || !helper.stdin) throw new Error("helper has no stdio");
+  const link = await connectTunnelHelper({ fromHelper: helper.stdout, toHelper: helper.stdin, config: { dial: { port: endpoint.port } } });
+  const tunnelled = await rpc({ port: link.localPort ?? 0, token: endpoint.token }, "system.hello", { protocolVersion: PROTOCOL_VERSION }).catch((error62) => String(error62));
+  report("core answers through the tunnel", typeof tunnelled === "object", JSON.stringify(tunnelled).slice(0, 200));
+  helper.stdin.end();
+  await logs("daemon");
+  await logs("core");
+}
+async function checkBackend() {
+  const state = await isDistroRunning(distro);
+  report("distro still running after the starter left", state === "running", state);
+  const saved = JSON.parse(readFileSync2(placeFile, "utf8"));
+  const endpoint = await wslCoreEndpoint(saved.place);
+  report("the same core still answers", endpoint?.pid === saved.pid, JSON.stringify(endpoint ? { ...endpoint, token: "\u2026" } : null));
+  if (endpoint) report("and answers Windows", typeof await rpc(endpoint, "system.hello", { protocolVersion: PROTOCOL_VERSION }).catch((error62) => String(error62)) === "object");
 }
 async function tunnel(file2) {
   const node2 = await findLinuxExecutable(distro, "node", "/usr/local/bin:/usr/bin:/bin");
@@ -24448,7 +24971,7 @@ async function tunnel(file2) {
   const done = new Promise((resolve) => socket.on("close", () => resolve()));
   const sendBegan = Date.now();
   socket.end(sent);
-  await Promise.race([done, sleep(3e4)]);
+  await Promise.race([done, sleep2(3e4)]);
   report("tunnel: 3MB Windows to Linux and back", sha(Buffer.concat(got)) === sha(sent), `${Date.now() - sendBegan}ms, ${Buffer.concat(got).length} bytes`);
   const client = "const net = require('net'), crypto = require('crypto'); const s = net.connect(Number(process.argv[1]), '127.0.0.1'); const h = crypto.createHash('sha256'); let n = 0; s.on('data', (c) => { h.update(c); n += c.length }); s.on('close', () => console.log(n + ' ' + h.digest('hex'))); s.end(Buffer.alloc(1048576, 'antumi'))";
   const fromLinux = await runInDistro(distro, [node2.path, "-e", client, String(link.remotePort)], { timeoutMs: 3e4 });
@@ -24458,7 +24981,7 @@ async function tunnel(file2) {
   report("tunnel: endpoint file names the helper port", written.includes(`"port":${String(link.remotePort)}`) && written.includes('"token":"smoke"'), written);
   note("tunnel: endpoint file mode", (await runInDistro(distro, ["/usr/bin/stat", "-c", "%a", endpointFile])).stdout.trim());
   helper.stdin.end();
-  const code = await Promise.race([exited, sleep(1e4).then(() => "still running")]);
+  const code = await Promise.race([exited, sleep2(1e4).then(() => "still running")]);
   report("tunnel: helper leaves when its stdin closes", code === 0, `${String(code)} ${complaints}`);
   report("tunnel: endpoint file removed", (await runInDistro(distro, ["/usr/bin/test", "-e", endpointFile])).code === 1);
   linuxEcho.kill();

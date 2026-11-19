@@ -1,0 +1,82 @@
+name: wsl-backend
+on:
+  push:
+    paths: ['wsl-smoke.mjs', 'antumi-overlay.tar.gz', '.github/workflows/wsl-backend.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  # Antumi's dev as pushed; antumi-overlay.tar.gz holds the WSL work not yet pushed, laid over it.
+  ANTUMI_REF: ea36b18b
+jobs:
+  archive:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: check
+      - uses: actions/checkout@v7
+        with:
+          repository: flyhero/antumi
+          ref: dev
+          fetch-depth: 50
+          path: antumi
+      - name: Lay the WSL work over the checkout
+        working-directory: antumi
+        run: |
+          git checkout -q "$ANTUMI_REF"
+          tar -xzf ../check/antumi-overlay.tar.gz
+          git status --short
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: antumi/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+        working-directory: antumi
+      - run: node packages/desktop/scripts/bundle-backend.mjs --platform linux
+        working-directory: antumi
+      - run: node packages/desktop/scripts/pack-wsl-backend.mjs
+        working-directory: antumi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wsl-backend
+          path: antumi/packages/desktop/build/wsl/
+          if-no-files-found: error
+          retention-days: 3
+
+  backend:
+    needs: archive
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wsl-backend
+          path: wsl
+      - uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+      - name: Node in the distro
+        shell: cmd
+        run: |
+          curl.exe -fsSL -o node.tar.gz https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.gz
+          wsl.exe -d Ubuntu-24.04 --exec tar -xz -C /usr/local --strip-components=1 < node.tar.gz
+          wsl.exe -d Ubuntu-24.04 --exec /usr/local/bin/node --version
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install and start the backend
+        shell: powershell
+        run: node wsl-smoke.mjs Ubuntu-24.04 --backend wsl
+      - name: Wait three minutes with nothing touching WSL
+        if: always()
+        shell: powershell
+        run: Start-Sleep -Seconds 185
+      - name: Check the backend outlived its starter
+        if: always()
+        shell: powershell
+        run: node wsl-smoke.mjs Ubuntu-24.04 --check-backend
