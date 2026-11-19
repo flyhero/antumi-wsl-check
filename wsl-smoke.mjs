@@ -24676,6 +24676,15 @@ var LAUNCH_SCRIPT = [
   "shift",
   'exec "$@" >> "$logs/$name.log" 2>&1'
 ].join("\n");
+var TIDY_SCRIPT = [
+  'root="$HOME/.antumi/backend"',
+  'for dir in "$root"/*/; do',
+  "  dir=${dir%/}",
+  '  [ "$dir" = "$root/$1" ] && continue',
+  '  grep -q -a -F -- "$dir/" /proc/[0-9]*/cmdline 2>/dev/null && continue',
+  '  rm -rf "$dir"',
+  "done"
+].join("\n");
 var Started = external_exports.object({ start: external_exports.array(external_exports.enum(["daemon", "core"])) });
 var Endpoint = external_exports.object({ endpoint: CoreEndpoint.nullable() });
 var Check = external_exports.object({ node: external_exports.string(), arch: external_exports.string(), pty: external_exports.union([external_exports.literal(true), external_exports.string()]) });
@@ -24756,7 +24765,10 @@ async function ensureWslBackend(options) {
   const until = Date.now() + (options.startWaitMs ?? START_WAIT_MS);
   for (; ; ) {
     const endpoint = await wslCoreEndpoint(place, host);
-    if (endpoint) return { ok: true, place, endpoint };
+    if (endpoint) {
+      await runInDistro(place.distro, ["/bin/sh", "-c", TIDY_SCRIPT, "sh", folder], { host });
+      return { ok: true, place, endpoint };
+    }
     if (Date.now() >= until) return { ok: false, problem: { kind: "start", detail: `core did not come up; see ${place.home}/.antumi/logs/core.log in ${place.distro}` } };
     await sleep(500);
   }
@@ -24895,6 +24907,9 @@ async function backend(folder) {
   if (typeof manifest !== "object" || manifest === null || !("sha256" in manifest) || typeof manifest.sha256 !== "string" || !("version" in manifest) || typeof manifest.version !== "string") throw new Error("no manifest");
   const options = { distro, version: manifest.version, archive: { file: join(folder, "backend-linux-x64.tar.gz"), sha256: manifest.sha256 } };
   note("manifest", manifest);
+  await runInDistro(distro, ["/bin/sh", "-c", 'root="$HOME/.antumi/backend"; mkdir -p "$root/0.0.1-idle" "$root/0.0.2-busy"; : > "$root/0.0.1-idle/core.mjs"; : > "$root/0.0.2-busy/daemon.mjs"']);
+  spawnInDistro(distro, ["/bin/sh", "-c", 'exec tail -f /dev/null "$HOME/.antumi/backend/0.0.2-busy/daemon.mjs"'], { detached: true }).unref();
+  await sleep2(1500);
   const began = Date.now();
   const started = await ensureWslBackend(options);
   report("backend installed and started", started.ok, `${Date.now() - began}ms ${JSON.stringify(started.ok ? { place: { ...started.place, path: "\u2026" }, endpoint: { ...started.endpoint, token: "\u2026" } } : started.problem)}`);
@@ -24906,7 +24921,8 @@ async function backend(folder) {
   }
   const { place, endpoint } = started;
   writeFileSync(placeFile, JSON.stringify({ place, pid: endpoint.pid }));
-  note("installed", (await runInDistro(distro, ["/bin/ls", "-la", place.dir])).stdout);
+  const folders = (await runInDistro(distro, ["/bin/sh", "-c", 'ls "$HOME/.antumi/backend"'])).stdout.trim().split("\n").sort();
+  report("old folders are cleared, but for one still in use", folders.length === 2 && folders.includes("0.0.2-busy") && !folders.includes("0.0.1-idle"), JSON.stringify(folders));
   const hello = await rpc(endpoint, "system.hello", { protocolVersion: PROTOCOL_VERSION }).catch((error62) => String(error62));
   report("core answers Windows on 127.0.0.1", typeof hello === "object", JSON.stringify(hello));
   const environment = await rpc(endpoint, "system.environment", { refresh: true }).catch((error62) => String(error62));
