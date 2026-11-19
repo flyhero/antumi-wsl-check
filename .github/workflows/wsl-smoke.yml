@@ -14,11 +14,14 @@ jobs:
       - uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
-          additional-packages: curl ca-certificates xz-utils
-      # What Antumi asks of a distro: a Node new enough for core (22.13).
+      # What Antumi asks of a distro: a Node new enough for core (22.13). Fetched on Windows and
+      # sent in over stdin, so the distro needs neither apt nor a network of its own.
       - name: Node in the distro
-        shell: powershell
-        run: wsl.exe -d Ubuntu-24.04 --exec /bin/sh -c "curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1 && node --version"
+        shell: cmd
+        run: |
+          curl.exe -fsSL -o node.tar.gz https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.gz
+          wsl.exe -d Ubuntu-24.04 --exec tar -xz -C /usr/local --strip-components=1 < node.tar.gz
+          wsl.exe -d Ubuntu-24.04 --exec /usr/local/bin/node --version
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
