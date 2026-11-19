@@ -29,3 +29,16 @@ jobs:
       - name: Smoke
         shell: powershell
         run: node wsl-smoke.mjs Ubuntu-24.04 --mutate --tunnel wsl-tunnel.mjs
+      # The backend's launch outliving the process that made it, as the app's must when it quits.
+      - name: Launch and leave
+        if: always()
+        shell: powershell
+        run: node wsl-smoke.mjs Ubuntu-24.04 --launch
+      - name: Wait three minutes with nothing touching WSL
+        if: always()
+        shell: powershell
+        run: Start-Sleep -Seconds 185
+      - name: Check the launch
+        if: always()
+        shell: powershell
+        run: node wsl-smoke.mjs Ubuntu-24.04 --check-launch

@@ -5,12 +5,10 @@ var __export = (target, all) => {
 };
 
 // packages/desktop/src/main/wsl/wsl-smoke.ts
-import { spawn as spawn2, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-import { closeSync, mkdtempSync, openSync, readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync2 } from "node:fs";
 import net from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 // node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -24215,8 +24213,7 @@ function spawnInDistro(distro2, argv, options = {}) {
   const file2 = wslExecutable(host);
   if (!file2) throw new Error("wsl-not-found");
   const args = distroArgs(distro2, argv, options.env);
-  const { output: output2 } = options;
-  if (output2) return host.spawn(file2, args, { ...baseOptions(host), detached: true, stdio: ["ignore", output2.stdout, output2.stderr] });
+  if (options.detached) return host.spawn(file2, args, { ...baseOptions(host), detached: true, stdio: "ignore" });
   return host.spawn(file2, args, { ...baseOptions(host), stdio: ["pipe", "pipe", "pipe"] });
 }
 
@@ -24325,7 +24322,24 @@ function report(name, ok, detail = "") {
 var note = (name, value) => console.log(`NOTE  ${name}  ${typeof value === "string" ? value : JSON.stringify(value)}`);
 var sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function launchProgram(seconds) {
+  return ["/bin/sh", "-c", 'log="$HOME/.antumi-smoke/launch-$1.log"; mkdir -p "${log%/*}"; echo "started $HOME" >> "$log"; exec sleep "$1" >> "$log" 2>&1', "sh", String(seconds)];
+}
+async function launch() {
+  spawnInDistro(distro, launchProgram(901), { detached: true }).unref();
+  await sleep(3e3);
+  report("launched", (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 901"])).code === 0);
+}
+async function checkLaunch() {
+  const state = await isDistroRunning(distro);
+  report("distro still running after the launcher left", state === "running", state);
+  report("launched process still there", (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 901"])).code === 0);
+  note("its uptime", (await runInDistro(distro, ["/bin/sh", "-c", 'ps -o etimes= -p "$(pgrep -f "sleep 901" | head -1)"'])).stdout.trim());
+  await runInDistro(distro, ["/usr/bin/pkill", "-f", "sleep 901"]);
+}
 async function main() {
+  if (process.argv.includes("--launch")) return launch();
+  if (process.argv.includes("--check-launch")) return checkLaunch();
   const exe = wslExecutable();
   report("wsl.exe found", exe !== null, exe ?? "");
   if (!exe || !distro) throw new Error("usage: node wsl-smoke.mjs <distro> [--mutate]");
@@ -24381,34 +24395,12 @@ v a"l $x
   cat.stdin?.end(binary);
   await closed;
   report("piped child is binary-clean for 2MB", sha(Buffer.concat(back)) === sha(binary), `${Buffer.concat(back).length} bytes back`);
-  const logs = mkdtempSync(join(tmpdir(), "antumi-wsl-smoke-"));
-  const launched = async (name, seconds, start) => {
-    const file2 = join(logs, `${seconds}.log`);
-    const log = openSync(file2, "a");
-    let exit = "running";
-    const child = start(log);
-    child.on("error", (error62) => {
-      exit = `error ${String(error62)}`;
-    });
-    child.on("exit", (code, signal) => {
-      exit = `exit ${String(code)} ${String(signal)}`;
-    });
-    child.unref();
-    closeSync(log);
-    await sleep(2500);
-    const said = readFileSync2(file2, "utf8");
-    const running = (await runInDistro(distro, ["/usr/bin/pgrep", "-f", `sleep ${seconds}`])).code === 0;
-    note(`launch: ${name}`, { exit, said, running });
-    await runInDistro(distro, ["/usr/bin/pkill", "-f", `sleep ${seconds}`]);
-    return said.includes("started") && running;
-  };
-  const program = (seconds) => ["/bin/sh", "-c", `echo started; exec sleep ${seconds}`];
-  report("detached launch runs and logs", await launched("module", 47, (log) => spawnInDistro(distro, program(47), { output: { stdout: log, stderr: log } })));
-  const variant = (seconds, options) => (log) => spawn2(exe, distroArgs(distro, program(seconds)), { cwd: process.env.SystemRoot, env: { ...process.env, WSL_UTF8: "1" }, ...options, stdio: [options.stdio === "pipe" ? "pipe" : "ignore", log, log] });
-  await launched("detached, not hidden", 48, variant(48, { detached: true }));
-  await launched("hidden, not detached", 49, variant(49, { windowsHide: true }));
-  await launched("detached, hidden, stdin piped", 50, variant(50, { detached: true, windowsHide: true, stdio: "pipe" }));
-  await launched("neither", 51, variant(51, {}));
+  note("HOME under --exec", (await runInDistro(distro, ["/usr/bin/printenv", "HOME"])).stdout.trim());
+  spawnInDistro(distro, launchProgram(47), { detached: true }).unref();
+  await sleep(2500);
+  const said = (await runInDistro(distro, ["/bin/sh", "-c", 'cat "$HOME/.antumi-smoke/launch-47.log"'])).stdout;
+  report("detached launch runs and logs in the distro", said.includes("started /") && (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 47"])).code === 0, JSON.stringify(said));
+  await runInDistro(distro, ["/usr/bin/pkill", "-f", "sleep 47"]);
   if (tunnelFile) await tunnel(tunnelFile);
   const terminated = await runWsl(["--terminate", distro]);
   note("terminate", terminated);
@@ -24462,7 +24454,8 @@ async function tunnel(file2) {
   const fromLinux = await runInDistro(distro, [node2.path, "-e", client, String(link.remotePort)], { timeoutMs: 3e4 });
   report("tunnel: 1MB Linux to Windows and back", fromLinux.stdout.trim() === `1048576 ${sha(Buffer.alloc(1048576, "antumi"))}`, JSON.stringify(fromLinux));
   const endpoint = await runInDistro(distro, ["/bin/cat", endpointFile]);
-  report("tunnel: endpoint file names the helper port", endpoint.stdout.includes(`"port":${String(link.remotePort)}`) && endpoint.stdout.includes('"token":"smoke"'), endpoint.stdout);
+  const written = endpoint.stdout.replace(/\s/g, "");
+  report("tunnel: endpoint file names the helper port", written.includes(`"port":${String(link.remotePort)}`) && written.includes('"token":"smoke"'), written);
   note("tunnel: endpoint file mode", (await runInDistro(distro, ["/usr/bin/stat", "-c", "%a", endpointFile])).stdout.trim());
   helper.stdin.end();
   const code = await Promise.race([exited, sleep(1e4).then(() => "still running")]);
