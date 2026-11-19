@@ -1,0 +1,50 @@
+name: linux-tests
+on:
+  push:
+    paths: ['antumi-overlay.tar.gz', '.github/workflows/linux-tests.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  # Antumi's main as pushed; antumi-overlay.tar.gz holds what is not pushed yet, laid over it.
+  ANTUMI_REF: 94dc1ee9
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: check
+      - uses: actions/checkout@v7
+        with:
+          repository: flyhero/antumi
+          ref: main
+          fetch-depth: 50
+          path: antumi
+      - name: Lay the unpushed work over the checkout
+        working-directory: antumi
+        run: |
+          git checkout -q "$ANTUMI_REF"
+          tar -xzf ../check/antumi-overlay.tar.gz
+          git status --short
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: antumi/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+        working-directory: antumi
+      # The tests that only meet Linux here: twenty times over, for the ones that race.
+      - name: WSL tests, repeated
+        working-directory: antumi
+        run: |
+          for round in $(seq 1 20); do
+            pnpm exec vitest run packages/protocol/src/node/stdio-tunnel.test.ts packages/protocol/src/node/backend-lifecycle.test.ts packages/core/src/wsl-tunnel.test.ts packages/core/src/backend-control.test.ts packages/desktop/src/main/wsl > round.log 2>&1 || { echo "round $round failed"; cat round.log; exit 1; }
+          done
+          echo "20 rounds passed"
+      - run: pnpm typecheck
+        working-directory: antumi
+      - run: pnpm test
+        working-directory: antumi

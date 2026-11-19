@@ -1,13 +1,13 @@
 name: wsl-backend
 on:
   push:
-    paths: ['wsl-smoke.mjs', 'antumi-overlay.tar.gz', '.github/workflows/wsl-backend.yml']
+    paths: ['wsl-smoke.mjs', '.github/workflows/wsl-backend.yml']
   workflow_dispatch:
 permissions:
   contents: read
 env:
   # Antumi's dev as pushed; antumi-overlay.tar.gz holds the WSL work not yet pushed, laid over it.
-  ANTUMI_REF: ea36b18b
+  ANTUMI_REF: 94dc1ee9
 jobs:
   archive:
     runs-on: ubuntu-22.04
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: flyhero/antumi
-          ref: dev
+          ref: main
           fetch-depth: 50
           path: antumi
       - name: Lay the WSL work over the checkout
