@@ -18,14 +18,15 @@ jobs:
           - { anchor: wsl, networking: mirrored }
     steps:
       - uses: actions/checkout@v7
-      - name: Mirrored networking
-        if: matrix.networking == 'mirrored'
-        shell: powershell
-        run: Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value "[wsl2]`nnetworkingMode=mirrored" -Encoding ASCII
       - uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
           additional-packages: nodejs
+      # After the install: on the runner a mirrored distro resolves no names, and apt found nothing.
+      - name: Mirrored networking
+        if: matrix.networking == 'mirrored'
+        shell: powershell
+        run: Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value "[wsl2]`nnetworkingMode=mirrored" -Encoding ASCII
       # A stopped VM, so the start step meets WSL the way a fresh login would.
       - name: Restart WSL
         shell: powershell
