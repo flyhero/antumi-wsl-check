@@ -1,7 +1,7 @@
 name: wsl-smoke
 on:
   push:
-    paths: ['wsl-smoke.mjs', '.github/workflows/wsl-smoke.yml']
+    paths: ['wsl-smoke.mjs', 'wsl-tunnel.mjs', '.github/workflows/wsl-smoke.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,10 +14,15 @@ jobs:
       - uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
+          additional-packages: curl ca-certificates xz-utils
+      # What Antumi asks of a distro: a Node new enough for core (22.13).
+      - name: Node in the distro
+        shell: powershell
+        run: wsl.exe -d Ubuntu-24.04 --exec /bin/sh -c "curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1 && node --version"
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
       # Antumi's WSL modules, bundled from packages/desktop/src/main/wsl/wsl-smoke.ts.
       - name: Smoke
         shell: powershell
-        run: node wsl-smoke.mjs Ubuntu-24.04 --mutate
+        run: node wsl-smoke.mjs Ubuntu-24.04 --mutate --tunnel wsl-tunnel.mjs

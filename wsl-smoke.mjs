@@ -5,16 +5,12 @@ var __export = (target, all) => {
 };
 
 // packages/desktop/src/main/wsl/wsl-smoke.ts
-import { spawnSync } from "node:child_process";
+import { spawn as spawn2, spawnSync } from "node:child_process";
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, readFileSync as readFileSync2 } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-// packages/desktop/src/main/wsl/wsl-command.ts
-import { spawn } from "node:child_process";
-import { statSync as statSync2 } from "node:fs";
-import path from "node:path";
 
 // node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -23825,10 +23821,303 @@ var NPM_DIRECT_SHIM = new RegExp(String.raw`^${ECHO_OFF}(?:${FIND_DP0})?${dp0Pat
 var PNPM_DIRECT_SHIM = new RegExp(String.raw`^(?:@SETLOCAL\n)?@?${dp0Path("target")} +%\*$`, "i");
 
 // packages/protocol/src/node/stdio-tunnel.ts
+import { createConnection, createServer } from "node:net";
+var FRAME = { open: 1, data: 2, end: 3, reset: 4 };
+var HEADER_BYTES = 10;
 var MAX_FRAME_BYTES = 1024 * 1024;
 var DATA_SLICE_BYTES = 256 * 1024;
+var TUNNEL_SENTINEL = "ANTUMI-TUNNEL 1 ";
+var TUNNEL_TARGETS = { app: "app", helper: "helper" };
+async function openStdioTunnel(options) {
+  const listening = [];
+  try {
+    for (const offer of options.offers ?? []) {
+      if ("server" in offer) listening.push({ target: offer.target, server: offer.server, owned: false });
+      else listening.push({ target: offer.target, server: await listenLoopback(offer.port ?? 0), owned: true });
+    }
+  } catch (error62) {
+    for (const entry of listening) if (entry.owned) entry.server.close();
+    throw error62;
+  }
+  return runTunnel(options, listening);
+}
+function listenLoopback(port = 0) {
+  return new Promise((resolve, reject) => {
+    const server = createServer({ allowHalfOpen: true });
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve(server);
+    });
+  });
+}
+function runTunnel(options, listening) {
+  const { input: input2, output: output2 } = options;
+  const dials = options.dials ?? {};
+  const mine = /* @__PURE__ */ new Map();
+  const theirs = /* @__PURE__ */ new Map();
+  let nextId = 1;
+  let finished = false;
+  let settle2 = () => {
+  };
+  const closed = new Promise((resolve) => settle2 = resolve);
+  let outboundBlocked = false;
+  const stalled = /* @__PURE__ */ new Set();
+  const send = (type, stream, payload) => {
+    if (finished) return;
+    const header = Buffer.alloc(HEADER_BYTES);
+    header.writeUInt8(type, 0);
+    header.writeUInt8(stream.mine ? 0 : 1, 1);
+    header.writeUInt32BE(stream.id, 2);
+    header.writeUInt32BE(payload?.length ?? 0, 6);
+    let ok = output2.write(header);
+    if (payload?.length) ok = output2.write(payload);
+    if (!ok && !outboundBlocked) {
+      outboundBlocked = true;
+      for (const each of [...mine.values(), ...theirs.values()]) each.socket.pause();
+    }
+  };
+  const onDrain = () => {
+    outboundBlocked = false;
+    for (const each of [...mine.values(), ...theirs.values()]) each.socket.resume();
+  };
+  const unstall = (stream) => {
+    if (stalled.delete(stream) && stalled.size === 0 && !finished) input2.resume();
+  };
+  const forget = (stream) => {
+    stream.gone = true;
+    (stream.mine ? mine : theirs).delete(stream.id);
+    unstall(stream);
+  };
+  const attach = (stream) => {
+    const { socket } = stream;
+    (stream.mine ? mine : theirs).set(stream.id, stream);
+    if (outboundBlocked) socket.pause();
+    socket.on("data", (chunk) => {
+      for (let at = 0; at < chunk.length; at += DATA_SLICE_BYTES) send(FRAME.data, stream, chunk.subarray(at, at + DATA_SLICE_BYTES));
+    });
+    socket.on("end", () => {
+      stream.sentEnd = true;
+      send(FRAME.end, stream);
+    });
+    socket.on("drain", () => unstall(stream));
+    socket.on("error", () => {
+    });
+    socket.on("close", () => {
+      if (stream.gone) return;
+      if (!(stream.sentEnd && stream.gotEnd)) send(FRAME.reset, stream);
+      forget(stream);
+    });
+  };
+  const offerConnection = (target) => (socket) => {
+    if (finished) {
+      abort(socket);
+      return;
+    }
+    const stream = { id: nextId, mine: true, socket, sentEnd: false, gotEnd: false, gone: false };
+    nextId = nextId >= 4294967295 ? 1 : nextId + 1;
+    attach(stream);
+    send(FRAME.open, stream, Buffer.from(target, "utf8"));
+  };
+  const handlers = listening.map((entry) => {
+    const handler = offerConnection(entry.target);
+    entry.server.on("connection", handler);
+    return { server: entry.server, handler, owned: entry.owned };
+  });
+  const ports = Object.fromEntries(listening.map((entry) => [entry.target, portOf(entry.server)]));
+  const opened = (id, target) => {
+    const port = dials[target];
+    const socket = port === void 0 ? null : createConnection({ host: "127.0.0.1", port, allowHalfOpen: true });
+    if (!socket || theirs.has(id)) {
+      send(FRAME.reset, { id, mine: false });
+      if (socket) abort(socket);
+      return;
+    }
+    attach({ id, mine: false, socket, sentEnd: false, gotEnd: false, gone: false });
+  };
+  const deliver = (type, opener, id, payload) => {
+    if (type === FRAME.open) {
+      if (opener !== 0) throw new Error("tunnel: OPEN for a stream this end owns");
+      opened(id, payload.toString("utf8"));
+      return;
+    }
+    const stream = (opener === 0 ? theirs : mine).get(id);
+    if (type === FRAME.data) {
+      if (stream && !stream.gotEnd && !stream.socket.write(payload)) {
+        stalled.add(stream);
+        input2.pause();
+      }
+    } else if (type === FRAME.end) {
+      if (stream && !stream.gotEnd) {
+        stream.gotEnd = true;
+        stream.socket.end();
+      }
+    } else if (type === FRAME.reset) {
+      if (stream) {
+        forget(stream);
+        abort(stream.socket);
+      }
+    } else {
+      throw new Error(`tunnel: unknown frame type ${type}`);
+    }
+  };
+  let pending = Buffer.alloc(0);
+  const queued = [];
+  let reading = false;
+  const onData = (chunk) => {
+    queued.push(chunk);
+    if (reading) return;
+    reading = true;
+    try {
+      for (let next = queued.shift(); next && !finished; next = queued.shift()) {
+        pending = pending.length ? Buffer.concat([pending, next]) : next;
+        let at = 0;
+        while (!finished && pending.length - at >= HEADER_BYTES) {
+          const length = pending.readUInt32BE(at + 6);
+          if (length > MAX_FRAME_BYTES) throw new Error(`tunnel: frame of ${length} bytes`);
+          if (pending.length - at < HEADER_BYTES + length) break;
+          const type = pending.readUInt8(at);
+          const opener = pending.readUInt8(at + 1);
+          const id = pending.readUInt32BE(at + 2);
+          const payload = pending.subarray(at + HEADER_BYTES, at + HEADER_BYTES + length);
+          at += HEADER_BYTES + length;
+          deliver(type, opener, id, payload);
+        }
+        pending = pending.subarray(at);
+      }
+    } catch (error62) {
+      finish(error62 instanceof Error ? error62 : new Error(String(error62)));
+    } finally {
+      reading = false;
+    }
+  };
+  const onEnd = () => finish(null);
+  const onClose = () => finish(new Error("tunnel: input closed without ending"));
+  const onError = (error62) => finish(error62);
+  function finish(reason) {
+    if (finished) return;
+    finished = true;
+    input2.off("data", onData);
+    input2.off("end", onEnd);
+    input2.off("close", onClose);
+    output2.off("drain", onDrain);
+    for (const { server, handler, owned } of handlers) {
+      server.off("connection", handler);
+      if (owned) server.close();
+    }
+    for (const stream of [...mine.values(), ...theirs.values()]) {
+      stream.gone = true;
+      abort(stream.socket);
+    }
+    mine.clear();
+    theirs.clear();
+    stalled.clear();
+    try {
+      output2.end();
+    } catch {
+    }
+    input2.destroy();
+    settle2(reason);
+  }
+  input2.on("data", onData);
+  input2.on("end", onEnd);
+  input2.on("close", onClose);
+  input2.on("error", onError);
+  output2.on("drain", onDrain);
+  output2.on("error", onError);
+  if (options.head?.length) onData(options.head);
+  if (!finished) input2.resume();
+  return { ports, close: () => finish(null), closed };
+}
+function abort(socket) {
+  if (socket.destroyed) return;
+  socket.on("error", () => {
+  });
+  socket.resetAndDestroy();
+}
+function portOf(server) {
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("tunnel: offered server is not listening on a port");
+  return address.port;
+}
+function readFirstLine(input2, options) {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    const prefix = options.prefix === void 0 ? null : Buffer.from(options.prefix, "utf8");
+    const timer = options.timeoutMs === void 0 ? null : setTimeout(() => fail(new Error(`no first line within ${options.timeoutMs} ms`)), options.timeoutMs);
+    const done = () => {
+      if (timer) clearTimeout(timer);
+      input2.off("data", onData);
+      input2.off("end", onEnd);
+      input2.off("close", onEnd);
+      input2.off("error", fail);
+    };
+    function fail(error62) {
+      done();
+      input2.pause();
+      reject(error62);
+    }
+    const onEnd = () => fail(new Error("stream ended before its first line"));
+    const onData = (chunk) => {
+      buffered = buffered.length ? Buffer.concat([buffered, chunk]) : chunk;
+      const newline = buffered.indexOf(10);
+      const head = newline === -1 ? buffered : buffered.subarray(0, newline);
+      if (prefix) {
+        const span = Math.min(head.length, prefix.length);
+        if (!head.subarray(0, span).equals(prefix.subarray(0, span)) || newline !== -1 && head.length < prefix.length) {
+          fail(new Error(`unexpected output before the first line: ${JSON.stringify(head.subarray(0, 200).toString("utf8"))}`));
+          return;
+        }
+      }
+      if (newline === -1) {
+        if (buffered.length > options.maxBytes) fail(new Error(`first line longer than ${options.maxBytes} bytes`));
+        return;
+      }
+      done();
+      input2.pause();
+      resolve({ line: buffered.subarray(0, newline).toString("utf8").replace(/\r$/, ""), rest: buffered.subarray(newline + 1) });
+    };
+    input2.on("data", onData);
+    input2.on("end", onEnd);
+    input2.on("close", onEnd);
+    input2.on("error", fail);
+    input2.resume();
+  });
+}
+async function connectTunnelHelper(options) {
+  const { fromHelper, toHelper, config: config2 } = options;
+  if (config2.listen && options.appPort === void 0) throw new Error("tunnel: listen needs appPort");
+  toHelper.write(`${JSON.stringify(config2)}
+`);
+  const { line, rest } = await readFirstLine(fromHelper, { maxBytes: 4096, timeoutMs: options.timeoutMs ?? 15e3, prefix: TUNNEL_SENTINEL });
+  const remotePort = sentinelPort(line.slice(TUNNEL_SENTINEL.length));
+  const tunnel2 = await openStdioTunnel({
+    input: fromHelper,
+    output: toHelper,
+    head: rest,
+    offers: config2.dial ? [{ target: TUNNEL_TARGETS.helper, port: options.listenPort ?? 0 }] : [],
+    dials: config2.listen && options.appPort !== void 0 ? { [TUNNEL_TARGETS.app]: options.appPort } : {}
+  });
+  const localPort = tunnel2.ports[TUNNEL_TARGETS.helper];
+  return { remotePort, ...localPort === void 0 ? {} : { localPort }, close: tunnel2.close, closed: tunnel2.closed };
+}
+function sentinelPort(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`tunnel: unreadable sentinel ${JSON.stringify(text)}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || !("port" in parsed)) throw new Error("tunnel: sentinel without a port");
+  const { port } = parsed;
+  if (port === null || typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536) return port;
+  throw new Error("tunnel: sentinel port is not a port");
+}
 
 // packages/desktop/src/main/wsl/wsl-command.ts
+import { spawn } from "node:child_process";
+import { statSync as statSync2 } from "node:fs";
+import path from "node:path";
 var nodeWslHost = {
   platform: process.platform,
   env: process.env,
@@ -24026,6 +24315,8 @@ async function findLinuxExecutable(distro2, name, path2, options = {}) {
 // packages/desktop/src/main/wsl/wsl-smoke.ts
 var distro = process.argv[2] ?? "";
 var mutate = process.argv.includes("--mutate");
+var tunnelFlag = process.argv.indexOf("--tunnel");
+var tunnelFile = tunnelFlag === -1 ? null : process.argv[tunnelFlag + 1] ?? null;
 var failed = 0;
 function report(name, ok, detail = "") {
   if (!ok) failed += 1;
@@ -24091,13 +24382,34 @@ v a"l $x
   await closed;
   report("piped child is binary-clean for 2MB", sha(Buffer.concat(back)) === sha(binary), `${Buffer.concat(back).length} bytes back`);
   const logs = mkdtempSync(join(tmpdir(), "antumi-wsl-smoke-"));
-  const log = openSync(join(logs, "out.log"), "a");
-  const detached = spawnInDistro(distro, ["/bin/sh", "-c", "echo started; exec sleep 47"], { output: { stdout: log, stderr: log } });
-  detached.unref();
-  closeSync(log);
-  await sleep(2500);
-  report("detached launch runs and logs", readFileSync2(join(logs, "out.log"), "utf8").includes("started") && (await runInDistro(distro, ["/usr/bin/pgrep", "-f", "sleep 47"])).code === 0);
-  await runInDistro(distro, ["/usr/bin/pkill", "-f", "sleep 47"]);
+  const launched = async (name, seconds, start) => {
+    const file2 = join(logs, `${seconds}.log`);
+    const log = openSync(file2, "a");
+    let exit = "running";
+    const child = start(log);
+    child.on("error", (error62) => {
+      exit = `error ${String(error62)}`;
+    });
+    child.on("exit", (code, signal) => {
+      exit = `exit ${String(code)} ${String(signal)}`;
+    });
+    child.unref();
+    closeSync(log);
+    await sleep(2500);
+    const said = readFileSync2(file2, "utf8");
+    const running = (await runInDistro(distro, ["/usr/bin/pgrep", "-f", `sleep ${seconds}`])).code === 0;
+    note(`launch: ${name}`, { exit, said, running });
+    await runInDistro(distro, ["/usr/bin/pkill", "-f", `sleep ${seconds}`]);
+    return said.includes("started") && running;
+  };
+  const program = (seconds) => ["/bin/sh", "-c", `echo started; exec sleep ${seconds}`];
+  report("detached launch runs and logs", await launched("module", 47, (log) => spawnInDistro(distro, program(47), { output: { stdout: log, stderr: log } })));
+  const variant = (seconds, options) => (log) => spawn2(exe, distroArgs(distro, program(seconds)), { cwd: process.env.SystemRoot, env: { ...process.env, WSL_UTF8: "1" }, ...options, stdio: [options.stdio === "pipe" ? "pipe" : "ignore", log, log] });
+  await launched("detached, not hidden", 48, variant(48, { detached: true }));
+  await launched("hidden, not detached", 49, variant(49, { windowsHide: true }));
+  await launched("detached, hidden, stdin piped", 50, variant(50, { detached: true, windowsHide: true, stdio: "pipe" }));
+  await launched("neither", 51, variant(51, {}));
+  if (tunnelFile) await tunnel(tunnelFile);
   const terminated = await runWsl(["--terminate", distro]);
   note("terminate", terminated);
   await sleep(1500);
@@ -24106,6 +24418,58 @@ v a"l $x
   const second = await isDistroRunning(distro);
   report("a stopped distro reads as stopped, and asking does not start it", first === "stopped" && second === "stopped", `${first}, ${second}`);
   note("running list when nothing runs", await runWsl(["--list", "--running", "--quiet"]));
+}
+async function tunnel(file2) {
+  const node2 = await findLinuxExecutable(distro, "node", "/usr/local/bin:/usr/bin:/bin");
+  if (node2.status !== "found") return report("tunnel: a real node in the distro", false, JSON.stringify(node2));
+  note("tunnel: node", (await runInDistro(distro, [node2.path, "--version"])).stdout.trim());
+  const dir = "/tmp/antumi-smoke";
+  const put = await runInDistro(distro, ["/bin/sh", "-c", `mkdir -p ${dir} && cat > ${dir}/wsl-tunnel.mjs`], { input: readFileSync2(file2) });
+  report("tunnel: helper copied in over stdin", put.code === 0, put.stderr);
+  const windowsEcho = net.createServer((socket2) => socket2.pipe(socket2));
+  await new Promise((resolve) => windowsEcho.listen(0, "127.0.0.1", resolve));
+  const address = windowsEcho.address();
+  const windowsPort = address && typeof address === "object" ? address.port : 0;
+  const linuxEcho = spawnInDistro(distro, [node2.path, "-e", "require('net').createServer((s) => s.pipe(s)).listen(0, '127.0.0.1', function () { console.log(this.address().port) })"]);
+  const linuxPort = Number(await new Promise((resolve) => linuxEcho.stdout?.once("data", (chunk) => resolve(chunk.toString()))));
+  note("tunnel: echo ports", { windowsPort, linuxPort });
+  const helper = spawnInDistro(distro, [node2.path, `${dir}/wsl-tunnel.mjs`]);
+  let complaints = "";
+  helper.stderr?.on("data", (chunk) => {
+    complaints += chunk.toString();
+  });
+  const exited = new Promise((resolve) => helper.on("exit", resolve));
+  if (!helper.stdout || !helper.stdin) throw new Error("helper has no stdio");
+  const endpointFile = `${dir}/browser/host.json`;
+  const began = Date.now();
+  const link = await connectTunnelHelper({
+    fromHelper: helper.stdout,
+    toHelper: helper.stdin,
+    config: { listen: { endpointFile, endpoint: { token: "smoke", protocolVersion: 3 } }, dial: { port: linuxPort } },
+    appPort: windowsPort
+  });
+  report("tunnel: handshake", link.remotePort !== null && link.localPort !== void 0, `${Date.now() - began}ms ${JSON.stringify({ remotePort: link.remotePort, localPort: link.localPort })}`);
+  const sent = randomBytes2(3 * 1024 * 1024);
+  const got = [];
+  const socket = net.connect(link.localPort ?? 0, "127.0.0.1");
+  socket.on("data", (chunk) => got.push(chunk));
+  const done = new Promise((resolve) => socket.on("close", () => resolve()));
+  const sendBegan = Date.now();
+  socket.end(sent);
+  await Promise.race([done, sleep(3e4)]);
+  report("tunnel: 3MB Windows to Linux and back", sha(Buffer.concat(got)) === sha(sent), `${Date.now() - sendBegan}ms, ${Buffer.concat(got).length} bytes`);
+  const client = "const net = require('net'), crypto = require('crypto'); const s = net.connect(Number(process.argv[1]), '127.0.0.1'); const h = crypto.createHash('sha256'); let n = 0; s.on('data', (c) => { h.update(c); n += c.length }); s.on('close', () => console.log(n + ' ' + h.digest('hex'))); s.end(Buffer.alloc(1048576, 'antumi'))";
+  const fromLinux = await runInDistro(distro, [node2.path, "-e", client, String(link.remotePort)], { timeoutMs: 3e4 });
+  report("tunnel: 1MB Linux to Windows and back", fromLinux.stdout.trim() === `1048576 ${sha(Buffer.alloc(1048576, "antumi"))}`, JSON.stringify(fromLinux));
+  const endpoint = await runInDistro(distro, ["/bin/cat", endpointFile]);
+  report("tunnel: endpoint file names the helper port", endpoint.stdout.includes(`"port":${String(link.remotePort)}`) && endpoint.stdout.includes('"token":"smoke"'), endpoint.stdout);
+  note("tunnel: endpoint file mode", (await runInDistro(distro, ["/usr/bin/stat", "-c", "%a", endpointFile])).stdout.trim());
+  helper.stdin.end();
+  const code = await Promise.race([exited, sleep(1e4).then(() => "still running")]);
+  report("tunnel: helper leaves when its stdin closes", code === 0, `${String(code)} ${complaints}`);
+  report("tunnel: endpoint file removed", (await runInDistro(distro, ["/usr/bin/test", "-e", endpointFile])).code === 1);
+  linuxEcho.kill();
+  windowsEcho.close();
 }
 main().then(
   () => {
