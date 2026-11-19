@@ -24639,7 +24639,7 @@ async function findLinuxExecutable(distro2, name, path2, options = {}) {
 }
 
 // packages/desktop/src/main/wsl/wsl-backend.ts
-var MIN_NODE = [22, 13];
+var MIN_NODE = [24, 0];
 var START_WAIT_MS = 3e4;
 var INSTALL_TIMEOUT_MS = 12e4;
 var CONTROL_TIMEOUT_MS = 3e4;
@@ -24929,7 +24929,12 @@ async function backend(folder) {
 async function checkBackend() {
   const state = await isDistroRunning(distro);
   report("distro still running after the starter left", state === "running", state);
-  const saved = JSON.parse(readFileSync2(placeFile, "utf8"));
+  let saved;
+  try {
+    saved = JSON.parse(readFileSync2(placeFile, "utf8"));
+  } catch {
+    return report("a backend was started before", false);
+  }
   const endpoint = await wslCoreEndpoint(saved.place);
   report("the same core still answers", endpoint?.pid === saved.pid, JSON.stringify(endpoint ? { ...endpoint, token: "\u2026" } : null));
   if (endpoint) report("and answers Windows", typeof await rpc(endpoint, "system.hello", { protocolVersion: PROTOCOL_VERSION }).catch((error62) => String(error62)) === "object");
