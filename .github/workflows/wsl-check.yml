@@ -1,0 +1,46 @@
+name: wsl-check
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    name: ${{ matrix.anchor }} anchor, ${{ matrix.networking }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { anchor: wsl, networking: nat }
+          - { anchor: linux, networking: nat }
+          - { anchor: wsl, networking: mirrored }
+    env:
+      WSL_UTF8: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Mirrored networking
+        if: matrix.networking == 'mirrored'
+        shell: powershell
+        run: Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value "[wsl2]`nnetworkingMode=mirrored" -Encoding ASCII
+      - uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: nodejs
+      # A stopped VM, so the start step meets WSL the way a fresh login would.
+      - name: Restart WSL
+        shell: powershell
+        run: |
+          wsl.exe --shutdown
+          Start-Sleep -Seconds 8
+          wsl.exe --version
+      - name: Start
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File .\wsl-check.ps1 start -Distro Ubuntu-24.04 -Anchor ${{ matrix.anchor }}
+      - name: Wait three minutes with nothing touching WSL
+        shell: powershell
+        run: Start-Sleep -Seconds 185
+      - name: Check
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File .\wsl-check.ps1 check
