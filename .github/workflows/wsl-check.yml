@@ -16,8 +16,6 @@ jobs:
           - { anchor: wsl, networking: nat }
           - { anchor: linux, networking: nat }
           - { anchor: wsl, networking: mirrored }
-    env:
-      WSL_UTF8: '1'
     steps:
       - uses: actions/checkout@v7
       - name: Mirrored networking
@@ -31,6 +29,8 @@ jobs:
       # A stopped VM, so the start step meets WSL the way a fresh login would.
       - name: Restart WSL
         shell: powershell
+        env:
+          WSL_UTF8: '1'
         run: |
           wsl.exe --shutdown
           Start-Sleep -Seconds 8
