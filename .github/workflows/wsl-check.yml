@@ -1,6 +1,7 @@
 name: wsl-check
 on:
   push:
+    paths: ['wsl-check.ps1', '.github/workflows/wsl-check.yml']
   workflow_dispatch:
 permissions:
   contents: read
