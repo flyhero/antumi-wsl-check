@@ -36,7 +36,7 @@ jobs:
           node-version: '24'
       - run: pnpm install --frozen-lockfile
         working-directory: antumi
-      - run: node packages/desktop/scripts/bundle-backend.mjs --platform linux
+      - run: node packages/desktop/scripts/bundle-backend.mjs --platform linux --wsl
         working-directory: antumi
       - run: node packages/desktop/scripts/pack-wsl-backend.mjs
         working-directory: antumi
